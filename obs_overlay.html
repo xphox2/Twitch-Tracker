@@ -127,15 +127,23 @@
     <script>
         async function updateStats() {
             try {
-                const response = await fetch('data/latest_stats.json');
-                const stats = await response.json();
+                const [statsRes, earningsRes] = await Promise.all([
+                    fetch('data/latest_stats.json'),
+                    fetch('data/artist_earnings.json')
+                ]);
+                const stats = await statsRes.json();
+                const earnings = await earningsRes.json();
 
                 document.getElementById('followers').textContent = stats.followers;
                 document.getElementById('subscribers').textContent = stats.subscribers;
                 document.getElementById('bits-today').textContent = stats.bits_today;
                 document.getElementById('bits-total').textContent = stats.bits_total;
-                document.getElementById('artist-monthly').textContent = '$' + stats.artist_raise_30.toFixed(2);
-                document.getElementById('artist-lifetime').textContent = '$' + stats.artist_yearly.toFixed(2);
+
+                const monthly = earnings.monthly_bits?.[new Date().toISOString().slice(0, 7)] || 0;
+                const monthlySubs = earnings.monthly_subs?.[new Date().toISOString().slice(0, 7)] || 0;
+                document.getElementById('artist-monthly').textContent = '$' + (monthly + monthlySubs).toFixed(2);
+                document.getElementById('artist-lifetime').textContent = '$' + earnings.lifetime_total.toFixed(2);
+
                 document.getElementById('timestamp').textContent = 'Updated: ' + stats.timestamp.replace('T', ' ').slice(0, 19);
             } catch (e) {
                 console.log('Waiting for data...');
