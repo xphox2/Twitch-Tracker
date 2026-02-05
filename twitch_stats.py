@@ -14,16 +14,18 @@ import time
 import threading
 import http.server
 import socketserver
+import glob
 from urllib.parse import urlencode
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 CONFIG_FILE = "config.json"
 DATA_DIR = "data"
-ARCHIVE_FILE = os.path.join(DATA_DIR, "stats_archive.csv")
+ARCHIVE_DIR = os.path.join(DATA_DIR, "archive", "daily")
 LATEST_FILE = os.path.join(DATA_DIR, "latest_stats.json")
 ARTIST_EARNINGS_FILE = os.path.join(DATA_DIR, "artist_earnings.json")
 DAILY_BITS_FILE = os.path.join(DATA_DIR, "daily_bits.json")
+ARCHIVE_RETENTION_DAYS = 7
 
 SCOPES = ["bits:read", "channel:read:subscriptions", "moderation:read"]
 
@@ -132,6 +134,43 @@ def get_current_date_key():
 def get_current_month_key():
     return datetime.now().strftime("%Y-%m")
 
+def get_archive_filename():
+    return os.path.join(ARCHIVE_DIR, f"stats_archive_{get_current_date_key()}.csv")
+
+def cleanup_old_archives():
+    cutoff_date = datetime.now() - timedelta(days=ARCHIVE_RETENTION_DAYS)
+    for archive_path in glob.glob(os.path.join(ARCHIVE_DIR, "stats_archive_*.csv")):
+        date_str = os.path.basename(archive_path).replace("stats_archive_", "").replace(".csv", "")
+        try:
+            file_date = datetime.strptime(date_str, "%Y-%m-%d")
+            if file_date < cutoff_date:
+                os.remove(archive_path)
+        except ValueError:
+            continue
+
+def rotate_archive_if_needed():
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    migrate_old_archive()
+    current_archive = get_archive_filename()
+    old_archives = glob.glob(os.path.join(ARCHIVE_DIR, "stats_archive_*.csv"))
+    for old_path in old_archives:
+        if old_path != current_archive:
+            try:
+                date_str = os.path.basename(old_path).replace("stats_archive_", "").replace(".csv", "")
+                datetime.strptime(date_str, "%Y-%m-%d")
+            except ValueError:
+                os.remove(old_path)
+    cleanup_old_archives()
+
+def migrate_old_archive():
+    old_archive = os.path.join(DATA_DIR, "stats_archive.csv")
+    if os.path.exists(old_archive) and os.path.getsize(old_archive) > 0:
+        import shutil
+        today = get_current_date_key()
+        backup_path = os.path.join(ARCHIVE_DIR, f"stats_archive_{today}.csv")
+        if not os.path.exists(backup_path):
+            shutil.move(old_archive, backup_path)
+
 def update_daily_bits(current_bits):
     data = load_daily_bits()
     today = get_current_date_key()
@@ -197,10 +236,11 @@ def fetch_all_stats(config):
     }
 
 def save_to_archive(stats):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    file_exists = os.path.exists(ARCHIVE_FILE)
+    rotate_archive_if_needed()
+    archive_file = get_archive_filename()
+    file_exists = os.path.exists(archive_file)
 
-    with open(ARCHIVE_FILE, 'a', newline='') as f:
+    with open(archive_file, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=stats.keys())
         if not file_exists:
             writer.writeheader()
@@ -288,7 +328,8 @@ if __name__ == "__main__":
     print("Twitch Stats Tracker")
     print("=" * 50)
     print(f"Server: http://localhost:3001/obs_overlay.html")
-    print(f"Data archive: {ARCHIVE_FILE}")
+    print(f"Data archive: {ARCHIVE_DIR}/stats_archive_YYYY-MM-DD.csv")
+    print(f"Retention: Last {ARCHIVE_RETENTION_DAYS} days")
     print("Press Ctrl+C to stop\n")
 
     server_thread = threading.Thread(target=start_server, daemon=True)
