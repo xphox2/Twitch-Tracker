@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Rotating Stats 3</title>
+    <script src="branding-setup.js"></script>
+    <style>
+        :root {
+            --font-family: 'Segoe UI', Arial, sans-serif;
+            --font-size: 48px;
+            --font-size-label: 14px;
+            --font-weight: bold;
+            --color-primary: #9146ff;
+            --color-monthly: #ff6b6b;
+            --color-lifetime: #ffd700;
+            --color-label: #aaa;
+            --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            --bg-color: transparent;
+            --border-radius: 0;
+            --border-width: 0;
+            --border-style: solid;
+            --padding: 0;
+            --gap: 60px;
+            --rotation-interval: 5;
+        }
+
+        body {
+            background: transparent;
+            font-family: var(--font-family);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .container {
+            display: flex;
+            gap: var(--gap);
+        }
+
+        .column {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 200px;
+        }
+
+        .stat-box {
+            background: var(--bg-color);
+            border-radius: var(--border-radius);
+            padding: var(--padding);
+            text-align: center;
+            border: var(--border-width) var(--border-style);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-value {
+            font-size: var(--font-size);
+            font-weight: var(--font-weight);
+            text-shadow: var(--text-shadow);
+            order: var(--value-order, 1);
+        }
+
+        .stat-label {
+            font-size: var(--font-size-label);
+            text-transform: uppercase;
+            color: var(--color-label);
+            margin-top: 0;
+            text-shadow: none;
+            order: var(--label-order, 2);
+        }
+
+        .col1 .stat-value,
+        .col1 .stat-box { color: var(--color-primary); border-color: var(--color-primary); }
+        .col2 .stat-value.monthly,
+        .col2 .stat-box.monthly { color: var(--color-monthly); border-color: var(--color-monthly); }
+        .col2 .stat-value.lifetime,
+        .col2 .stat-box.lifetime { color: var(--color-lifetime); border-color: var(--color-lifetime); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="column col1">
+            <div class="stat-box" id="col1-box">
+                <div class="stat-value" id="col1-value">0</div>
+                <div class="stat-label" id="col1-label">Followers</div>
+            </div>
+        </div>
+        <div class="column col2">
+            <div class="stat-box monthly" id="col2-box">
+                <div class="stat-value monthly" id="col2-value">$0.00</div>
+                <div class="stat-label" id="col2-label">Artist (Monthly)</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const col1Stats = [
+            { label: 'Followers', key: 'followers' },
+            { label: 'Subscribers', key: 'subscribers' }
+        ];
+
+        const col2Stats = [
+            { label: 'Artist (Monthly)', key: 'artist_raise_30', prefix: '$', class: 'monthly' },
+            { label: 'Artist (Lifetime)', key: 'artist_yearly', prefix: '$', class: 'lifetime' }
+        ];
+
+        let col1Index = 0;
+        let col2Index = 0;
+        const interval = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--rotation-interval')) || 5;
+        let statsData = null;
+
+        async function updateStats() {
+            try {
+                const response = await fetch('data/latest_stats.json');
+                statsData = await response.json();
+            } catch (e) {
+                console.log('Waiting for data...');
+            }
+        }
+
+        function showStat(column, index, stats, boxId, valueId, labelId) {
+            if (!statsData) return;
+
+            const stat = stats[index];
+            const box = document.getElementById(boxId);
+            const valueEl = document.getElementById(valueId);
+            const labelEl = document.getElementById(labelId);
+
+            box.className = 'stat-box ' + (stat.class || '');
+
+            let value = statsData[stat.key];
+            if (stat.prefix) {
+                value = stat.prefix + parseFloat(value).toFixed(2);
+            } else {
+                value = parseInt(value).toLocaleString();
+            }
+
+            valueEl.textContent = value;
+            valueEl.className = 'stat-value ' + (stat.class || '');
+            labelEl.textContent = stat.label;
+        }
+
+        function rotate() {
+            showStat(1, col1Index, col1Stats, 'col1-box', 'col1-value', 'col1-label');
+            showStat(2, col2Index, col2Stats, 'col2-box', 'col2-value', 'col2-label');
+
+            col1Index = (col1Index + 1) % col1Stats.length;
+            col2Index = (col2Index + 1) % col2Stats.length;
+        }
+
+        updateStats();
+        setInterval(updateStats, 5000);
+        setInterval(rotate, interval * 1000);
+    </script>
+</body>
+</html>

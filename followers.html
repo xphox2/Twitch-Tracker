@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Followers</title>
+    <script src="branding-setup.js"></script>
+    <style>
+        :root {
+            --font-family: 'Segoe UI', Arial, sans-serif;
+            --font-size: 48px;
+            --font-size-label: 14px;
+            --font-weight: bold;
+            --color-primary: #9146ff;
+            --color-label: #aaa;
+            --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            --bg-color: transparent;
+            --border-radius: 0;
+            --border-width: 2px;
+            --border-style: solid;
+            --padding: 20px 40px;
+            --gap: 0;
+            --label-position: bottom;
+        }
+
+        body {
+            background: transparent;
+            font-family: var(--font-family);
+            color: #fff;
+            text-shadow: var(--text-shadow);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .stat-box {
+            background: var(--bg-color);
+            border-radius: var(--border-radius);
+            padding: var(--padding);
+            text-align: center;
+            border: var(--border-width) var(--border-style) var(--color-primary);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-value {
+            font-size: var(--font-size);
+            font-weight: var(--font-weight);
+            color: var(--color-primary);
+            text-shadow: var(--text-shadow);
+            order: var(--value-order, 1);
+        }
+
+        .stat-label {
+            font-size: var(--font-size-label);
+            text-transform: uppercase;
+            color: var(--color-label);
+            margin-top: 0;
+            text-shadow: none;
+            order: var(--label-order, 2);
+        }
+    </style>
+</head>
+<body>
+    <div class="stat-box">
+        <div class="stat-value" id="followers">0</div>
+        <div class="stat-label">Followers</div>
+    </div>
+
+    <script>
+        async function updateStats() {
+            try {
+                const response = await fetch('data/latest_stats.json');
+                const stats = await response.json();
+                document.getElementById('followers').textContent = stats.followers;
+            } catch (e) {}
+        }
+        updateStats();
+        setInterval(updateStats, 5000);
+    </script>
+</body>
+</html>

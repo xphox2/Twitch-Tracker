@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Artist Combined</title>
+    <script src="branding-setup.js"></script>
+    <style>
+        :root {
+            --font-family: 'Segoe UI', Arial, sans-serif;
+            --font-size: 36px;
+            --font-size-label: 12px;
+            --font-weight: bold;
+            --color-monthly: #ff6b6b;
+            --color-lifetime: #ffd700;
+            --color-label: #aaa;
+            --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            --bg-color: transparent;
+            --border-radius: 0;
+            --border-width: 2px;
+            --border-style: solid;
+            --padding: 15px 25px;
+            --gap: 15px;
+        }
+
+        body {
+            background: transparent;
+            font-family: var(--font-family);
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+
+        .stats-container {
+            display: flex;
+            gap: var(--gap);
+        }
+
+        .stat-box {
+            background: var(--bg-color);
+            border-radius: var(--border-radius);
+            padding: var(--padding);
+            text-align: center;
+            border: var(--border-width) var(--border-style);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .monthly-box {
+            border-color: var(--color-monthly);
+        }
+
+        .monthly-box .stat-value {
+            color: var(--color-monthly);
+        }
+
+        .lifetime-box {
+            border-color: var(--color-lifetime);
+        }
+
+        .lifetime-box .stat-value {
+            color: var(--color-lifetime);
+        }
+
+        .stat-value {
+            font-size: var(--font-size);
+            font-weight: var(--font-weight);
+            text-shadow: var(--text-shadow);
+            order: var(--value-order, 1);
+        }
+
+        .stat-label {
+            font-size: var(--font-size-label);
+            text-transform: uppercase;
+            color: var(--color-label);
+            margin-top: 0;
+            text-shadow: none;
+            order: var(--label-order, 2);
+        }
+    </style>
+</head>
+<body>
+    <div class="stats-container">
+        <div class="stat-box monthly-box">
+            <div class="stat-value" id="artist-monthly">$0.00</div>
+            <div class="stat-label">Artist (Monthly)</div>
+        </div>
+        <div class="stat-box lifetime-box">
+            <div class="stat-value" id="artist-lifetime">$0.00</div>
+            <div class="stat-label">Artist (Lifetime)</div>
+        </div>
+    </div>
+
+    <script>
+        async function updateStats() {
+            try {
+                const response = await fetch('data/latest_stats.json');
+                const stats = await response.json();
+                document.getElementById('artist-monthly').textContent = '$' + stats.artist_raise_30.toFixed(2);
+                document.getElementById('artist-lifetime').textContent = '$' + stats.artist_yearly.toFixed(2);
+            } catch (e) {}
+        }
+        updateStats();
+        setInterval(updateStats, 5000);
+    </script>
+</body>
+</html>

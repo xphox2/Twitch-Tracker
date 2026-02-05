@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Twitch Stats Overlay</title>
+    <script src="branding-setup.js"></script>
+    <style>
+        :root {
+            --font-family: 'Segoe UI', Arial, sans-serif;
+            --font-size: 28px;
+            --font-size-label: 12px;
+            --font-weight: bold;
+            --color-primary: #9146ff;
+            --color-monthly: #ff6b6b;
+            --color-lifetime: #ffd700;
+            --color-label: #aaa;
+            --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            --bg-color: transparent;
+            --border-radius: 0;
+            --border-width: 2px;
+            --border-style: solid;
+            --padding: 15px 20px;
+            --gap: 30px;
+        }
+
+        body {
+            background: transparent;
+            font-family: var(--font-family);
+            color: #fff;
+            text-shadow: var(--text-shadow);
+            padding: 20px;
+        }
+
+        .stats-container {
+            display: flex;
+            gap: var(--gap);
+            align-items: flex-start;
+        }
+
+        .stat-box {
+            background: var(--bg-color);
+            border-radius: var(--border-radius);
+            padding: var(--padding);
+            min-width: 150px;
+            text-align: center;
+            border: var(--border-width) var(--border-style);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-box:not(.artist-monthly-box):not(.artist-lifetime-box) {
+            border-color: var(--color-primary);
+        }
+
+        .stat-box:not(.artist-monthly-box):not(.artist-lifetime-box) .stat-value {
+            color: var(--color-primary);
+        }
+
+        .artist-monthly-box {
+            border-color: var(--color-monthly);
+        }
+
+        .artist-monthly-box .stat-value {
+            color: var(--color-monthly);
+        }
+
+        .artist-lifetime-box {
+            border-color: var(--color-lifetime);
+        }
+
+        .artist-lifetime-box .stat-value {
+            color: var(--color-lifetime);
+        }
+
+        .stat-value {
+            font-size: var(--font-size);
+            font-weight: var(--font-weight);
+            text-shadow: var(--text-shadow);
+            order: var(--value-order, 1);
+        }
+
+        .stat-label {
+            font-size: var(--font-size-label);
+            text-transform: uppercase;
+            color: var(--color-label);
+            margin-top: 0;
+            text-shadow: none;
+            order: var(--label-order, 2);
+        }
+
+        .timestamp {
+            font-size: 10px;
+            color: #666;
+            margin-top: 10px;
+            text-shadow: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="stats-container">
+        <div class="stat-box">
+            <div class="stat-value" id="followers">0</div>
+            <div class="stat-label">Followers</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="subscribers">0</div>
+            <div class="stat-label">Subscribers</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="bits-today">0</div>
+            <div class="stat-label">Bits Today</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-value" id="bits-total">0</div>
+            <div class="stat-label">Bits Total</div>
+        </div>
+        <div class="stat-box artist-monthly-box">
+            <div class="stat-value" id="artist-monthly">$0.00</div>
+            <div class="stat-label">Artist (Monthly)</div>
+        </div>
+        <div class="stat-box artist-lifetime-box">
+            <div class="stat-value" id="artist-lifetime">$0.00</div>
+            <div class="stat-label">Artist (Lifetime)</div>
+        </div>
+    </div>
+    <div class="timestamp" id="timestamp">Updated: --</div>
+
+    <script>
+        async function updateStats() {
+            try {
+                const response = await fetch('data/latest_stats.json');
+                const stats = await response.json();
+
+                document.getElementById('followers').textContent = stats.followers;
+                document.getElementById('subscribers').textContent = stats.subscribers;
+                document.getElementById('bits-today').textContent = stats.bits_today;
+                document.getElementById('bits-total').textContent = stats.bits_total;
+                document.getElementById('artist-monthly').textContent = '$' + stats.artist_raise_30.toFixed(2);
+                document.getElementById('artist-lifetime').textContent = '$' + stats.artist_yearly.toFixed(2);
+                document.getElementById('timestamp').textContent = 'Updated: ' + stats.timestamp.replace('T', ' ').slice(0, 19);
+            } catch (e) {
+                console.log('Waiting for data...');
+            }
+        }
+        updateStats();
+        setInterval(updateStats, 5000);
+    </script>
+</body>
+</html>
