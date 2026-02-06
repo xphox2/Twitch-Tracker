@@ -2,28 +2,50 @@
 <html>
 <head>
     <title>Twitch Stats Sidebar 2</title>
-    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap" rel="stylesheet">
     <script src="branding-setup.js"></script>
     <style>
         :root {
+            /* Global */
             --font-family: 'Bebas Neue', sans-serif;
-            --font-size: 32px;
-            --font-size-label: 14px;
-            --font-size-followers: 48px;
-            --font-size-monthly: 42px;
-            --font-size-lifetime: 36px;
             --font-weight: bold;
-            --color-primary: #9146ff;
-            --color-monthly: #ff6b6b;
-            --color-lifetime: #ffd700;
-            --color-label: #aaa;
             --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
-            --bg-color: transparent;
-            --border-radius: 0;
-            --border-width: 2px;
-            --border-style: solid;
-            --padding: 8px 15px;
             --gap: 5px;
+            
+            /* Widget: Followers */
+            --widget-followers-font-size: 48px;
+            --widget-followers-label-font-size: 14px;
+            --widget-followers-text-color: #9146ff;
+            --widget-followers-label-color: #aaaaaa;
+            --widget-followers-border-color: #9146ff;
+            --widget-followers-bg-color: transparent;
+            --widget-followers-border-width: 2px;
+            --widget-followers-border-style: solid;
+            --widget-followers-border-radius: 0px;
+            --widget-followers-padding: 8px 15px;
+            
+            /* Widget: Monthly */
+            --widget-monthly-font-size: 42px;
+            --widget-monthly-label-font-size: 14px;
+            --widget-monthly-text-color: #ff6b6b;
+            --widget-monthly-label-color: #aaaaaa;
+            --widget-monthly-border-color: #ff6b6b;
+            --widget-monthly-bg-color: transparent;
+            --widget-monthly-border-width: 2px;
+            --widget-monthly-border-style: solid;
+            --widget-monthly-border-radius: 0px;
+            --widget-monthly-padding: 8px 15px;
+            
+            /* Widget: Lifetime */
+            --widget-lifetime-font-size: 36px;
+            --widget-lifetime-label-font-size: 14px;
+            --widget-lifetime-text-color: #ffd700;
+            --widget-lifetime-label-color: #aaaaaa;
+            --widget-lifetime-border-color: #ffd700;
+            --widget-lifetime-bg-color: transparent;
+            --widget-lifetime-border-width: 2px;
+            --widget-lifetime-border-style: solid;
+            --widget-lifetime-border-radius: 0px;
+            --widget-lifetime-padding: 8px 15px;
         }
 
         body {
@@ -41,54 +63,84 @@
             gap: var(--gap);
         }
 
-        .stat-box {
-            background: var(--bg-color);
-            border-radius: var(--border-radius);
-            padding: var(--padding);
+        /* Followers Widget */
+        .widget-followers {
+            background: var(--widget-followers-bg-color);
+            border-radius: var(--widget-followers-border-radius);
+            padding: var(--widget-followers-padding);
             min-width: 180px;
             text-align: center;
-            border: var(--border-width) var(--border-style);
+            border: var(--widget-followers-border-width) var(--widget-followers-border-style) var(--widget-followers-border-color);
             display: flex;
             flex-direction: column;
             gap: 5px;
         }
 
-        .stat-box:not(.artist-monthly-box):not(.artist-lifetime-box) {
-            border-color: var(--color-primary);
-        }
-
-        .stat-box:not(.artist-monthly-box):not(.artist-lifetime-box) .stat-value {
-            color: var(--color-primary);
-            font-size: var(--font-size-followers);
-        }
-
-        .artist-monthly-box {
-            border-color: var(--color-monthly);
-        }
-
-        .artist-monthly-box .stat-value {
-            color: var(--color-monthly);
-            font-size: var(--font-size-monthly);
-        }
-
-        .artist-lifetime-box {
-            border-color: var(--color-lifetime);
-        }
-
-        .artist-lifetime-box .stat-value {
-            color: var(--color-lifetime);
-            font-size: var(--font-size-lifetime);
-        }
-
-        .stat-label {
-            font-size: var(--font-size-label);
+        .widget-followers .stat-label {
+            font-size: var(--widget-followers-label-font-size);
             text-transform: uppercase;
-            color: var(--color-label);
+            color: var(--widget-followers-label-color);
             text-shadow: none;
         }
 
-        .stat-value {
+        .widget-followers .stat-value {
+            font-size: var(--widget-followers-font-size);
             font-weight: var(--font-weight);
+            color: var(--widget-followers-text-color);
+            text-shadow: var(--text-shadow);
+        }
+
+        /* Monthly Widget */
+        .widget-monthly {
+            background: var(--widget-monthly-bg-color);
+            border-radius: var(--widget-monthly-border-radius);
+            padding: var(--widget-monthly-padding);
+            min-width: 180px;
+            text-align: center;
+            border: var(--widget-monthly-border-width) var(--widget-monthly-border-style) var(--widget-monthly-border-color);
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .widget-monthly .stat-label {
+            font-size: var(--widget-monthly-label-font-size);
+            text-transform: uppercase;
+            color: var(--widget-monthly-label-color);
+            text-shadow: none;
+        }
+
+        .widget-monthly .stat-value {
+            font-size: var(--widget-monthly-font-size);
+            font-weight: var(--font-weight);
+            color: var(--widget-monthly-text-color);
+            text-shadow: var(--text-shadow);
+        }
+
+        /* Lifetime Widget */
+        .widget-lifetime {
+            background: var(--widget-lifetime-bg-color);
+            border-radius: var(--widget-lifetime-border-radius);
+            padding: var(--widget-lifetime-padding);
+            min-width: 180px;
+            text-align: center;
+            border: var(--widget-lifetime-border-width) var(--widget-lifetime-border-style) var(--widget-lifetime-border-color);
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .widget-lifetime .stat-label {
+            font-size: var(--widget-lifetime-label-font-size);
+            text-transform: uppercase;
+            color: var(--widget-lifetime-label-color);
+            text-shadow: none;
+        }
+
+        .widget-lifetime .stat-value {
+            font-size: var(--widget-lifetime-font-size);
+            font-weight: var(--font-weight);
+            color: var(--widget-lifetime-text-color);
             text-shadow: var(--text-shadow);
         }
 
@@ -102,15 +154,15 @@
 </head>
 <body>
     <div class="sidebar-container">
-        <div class="stat-box">
+        <div class="widget-followers">
             <div class="stat-label">Followers</div>
             <div class="stat-value" id="followers">0</div>
         </div>
-        <div class="stat-box artist-monthly-box">
+        <div class="widget-monthly">
             <div class="stat-label">Artists (Monthly)</div>
             <div class="stat-value" id="artist-monthly">$0</div>
         </div>
-        <div class="stat-box artist-lifetime-box">
+        <div class="widget-lifetime">
             <div class="stat-label">Artists (Lifetime)</div>
             <div class="stat-value" id="artist-lifetime">$0</div>
         </div>
