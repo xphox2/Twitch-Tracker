@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Branding Color Selector</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            padding: 30px;
+            color: #fff;
+        }
+
+        h1 {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #a0aec0;
+            margin-bottom: 30px;
+        }
+
+        .container {
+            display: grid;
+            grid-template-columns: 350px 1fr;
+            gap: 30px;
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .panel h2 {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 13px;
+            color: #a0aec0;
+            margin-bottom: 8px;
+        }
+
+        .color-input-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        input[type="color"] {
+            width: 50px;
+            height: 40px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            background: transparent;
+        }
+
+        input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 2px;
+        }
+
+        input[type="color"]::-webkit-color-swatch {
+            border-radius: 6px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+        }
+
+        input[type="text"] {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 14px;
+            font-family: monospace;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #9146ff;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.1);
+            appearance: none;
+            cursor: pointer;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #9146ff;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        input[type="range"]::-webkit-slider-thumb:hover {
+            transform: scale(1.2);
+        }
+
+        .range-value {
+            text-align: right;
+            font-size: 12px;
+            color: #a0aec0;
+            margin-top: 5px;
+        }
+
+        select {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: #fff;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: #9146ff;
+        }
+
+        option {
+            background: #1a1a2e;
+        }
+
+        .button-row {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #9146ff;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: #7c3aed;
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .preview-section {
+            position: sticky;
+            top: 30px;
+        }
+
+        .preview-box {
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+        }
+
+        .preview-item {
+            background: var(--bg-color, transparent);
+            border-radius: var(--border-radius, 0);
+            padding: 20px;
+            text-align: center;
+            border: var(--border-width, 2px) var(--border-style, solid) var(--border-color, #9146ff);
+        }
+
+        .preview-value {
+            font-size: var(--font-size, 42px);
+            font-weight: var(--font-weight, bold);
+            color: var(--color-primary, #9146ff);
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            margin-bottom: 5px;
+        }
+
+        .preview-label {
+            font-size: var(--font-size-label, 16px);
+            color: var(--color-label, #aaa);
+            text-transform: uppercase;
+        }
+
+        .preview-item.monthly .preview-value {
+            color: var(--color-monthly, #ff6b6b);
+        }
+
+        .preview-item.lifetime .preview-value {
+            color: var(--color-lifetime, #ffd700);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            color: #a0aec0;
+            transition: all 0.2s;
+        }
+
+        .tab:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .tab.active {
+            background: #9146ff;
+            color: #fff;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .status-message {
+            margin-top: 15px;
+            padding: 10px 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .status-message.success {
+            background: rgba(72, 187, 120, 0.2);
+            color: #48bb78;
+            display: block;
+        }
+
+        .color-presets {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .preset-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .preset-btn:hover {
+            transform: scale(1.1);
+            border-color: #fff;
+        }
+
+        .section-divider {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+            margin: 25px 0;
+        }
+
+        .checkbox-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .checkbox-wrapper input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            accent-color: #9146ff;
+        }
+
+        .checkbox-wrapper label {
+            margin: 0;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <h1>Branding Color Selector</h1>
+    <p class="subtitle">Customize colors and styles for your Twitch overlays</p>
+
+    <div class="container">
+        <div class="controls">
+            <div class="panel">
+                <h2>Colors</h2>
+
+                <div class="control-group">
+                    <label>Primary Color (Subscribers, Bits)</label>
+                    <div class="color-input-wrapper">
+                        <input type="color" id="color-primary-picker" value="#9146ff">
+                        <input type="text" id="color-primary" value="#9146ff">
+                    </div>
+                    <div class="color-presets">
+                        <button class="preset-btn" style="background: #9146ff" onclick="setColor('primary', '#9146ff')"></button>
+                        <button class="preset-btn" style="background: #ff0000" onclick="setColor('primary', '#ff0000')"></button>
+                        <button class="preset-btn" style="background: #00ff00" onclick="setColor('primary', '#00ff00')"></button>
+                        <button class="preset-btn" style="background: #0000ff" onclick="setColor('primary', '#0000ff')"></button>
+                        <button class="preset-btn" style="background: #ff69b4" onclick="setColor('primary', '#ff69b4')"></button>
+                        <button class="preset-btn" style="background: #00ffff" onclick="setColor('primary', '#00ffff')"></button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Monthly Artist Color</label>
+                    <div class="color-input-wrapper">
+                        <input type="color" id="color-monthly-picker" value="#ff6b6b">
+                        <input type="text" id="color-monthly" value="#ff6b6b">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Lifetime Artist Color</label>
+                    <div class="color-input-wrapper">
+                        <input type="color" id="color-lifetime-picker" value="#ffd700">
+                        <input type="text" id="color-lifetime" value="#ffd700">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Label Text Color</label>
+                    <div class="color-input-wrapper">
+                        <input type="color" id="color-label-picker" value="#aaaaaa">
+                        <input type="text" id="color-label" value="#aaaaaa">
+                    </div>
+                </div>
+
+                <div class="section-divider"></div>
+
+                <div class="control-group">
+                    <label>Font Family</label>
+                    <select id="font-family">
+                        <option value="'Segoe UI', Arial, sans-serif">Segoe UI (Default)</option>
+                        <option value="Arial, sans-serif">Arial</option>
+                        <option value="'Helvetica Neue', Helvetica, sans-serif">Helvetica</option>
+                        <option value="Georgia, serif">Georgia</option>
+                        <option value="'Courier New', monospace">Courier New</option>
+                        <option value="Impact, sans-serif">Impact</option>
+                        <option value="'Comic Sans MS', cursive">Comic Sans MS</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Value Font Size</label>
+                    <input type="range" id="font-size-value" min="20" max="80" value="42">
+                    <div class="range-value"><span id="font-size-value-display">42</span>px</div>
+                </div>
+
+                <div class="control-group">
+                    <label>Label Font Size</label>
+                    <input type="range" id="font-size-label" min="10" max="30" value="16">
+                    <div class="range-value"><span id="font-size-label-display">16</span>px</div>
+                </div>
+            </div>
+
+            <div class="panel" style="margin-top: 20px;">
+                <h2>Background & Border</h2>
+
+                <div class="checkbox-wrapper">
+                    <input type="checkbox" id="bg-enabled">
+                    <label for="bg-enabled">Enable Background</label>
+                </div>
+
+                <div class="control-group">
+                    <label>Background Color</label>
+                    <div class="color-input-wrapper">
+                        <input type="color" id="bg-color-picker" value="#000000">
+                        <input type="text" id="bg-color" value="rgba(0,0,0,0.3)">
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <label>Border Width</label>
+                    <input type="range" id="border-width" min="0" max="10" value="0">
+                    <div class="range-value"><span id="border-width-display">0</span>px</div>
+                </div>
+
+                <div class="control-group">
+                    <label>Border Radius</label>
+                    <input type="range" id="border-radius" min="0" max="30" value="10">
+                    <div class="range-value"><span id="border-radius-display">10</span>px</div>
+                </div>
+
+                <div class="section-divider"></div>
+
+                <div class="control-group">
+                    <label>Label Position</label>
+                    <select id="label-position">
+                        <option value="top">Label on Top</option>
+                        <option value="bottom">Label on Bottom</option>
+                    </select>
+                </div>
+
+                <div class="button-row">
+                    <button class="btn btn-primary" onclick="saveBranding()">Save Branding</button>
+                    <button class="btn btn-secondary" onclick="resetBranding()">Reset to Default</button>
+                </div>
+                <div id="status-message" class="status-message"></div>
+            </div>
+        </div>
+
+        <div class="preview-section">
+            <div class="panel">
+                <h2>Live Preview</h2>
+                <div class="tabs">
+                    <button class="tab active" onclick="showPreviewTab('stats')">Stats</button>
+                    <button class="tab" onclick="showPreviewTab('sidebar')">Sidebar</button>
+                </div>
+
+                <div id="preview-stats" class="tab-content active">
+                    <div class="preview-box">
+                        <div class="preview-grid">
+                            <div class="preview-item">
+                                <div class="preview-value">1,234</div>
+                                <div class="preview-label">Followers</div>
+                            </div>
+                            <div class="preview-item">
+                                <div class="preview-value">0 / 150</div>
+                                <div class="preview-label">Subscribers</div>
+                            </div>
+                            <div class="preview-item">
+                                <div class="preview-value">5,678</div>
+                                <div class="preview-label">Bits Today</div>
+                            </div>
+                            <div class="preview-item monthly">
+                                <div class="preview-value">$45.00</div>
+                                <div class="preview-label">Artists (Monthly)</div>
+                            </div>
+                            <div class="preview-item lifetime">
+                                <div class="preview-value">$1,250.00</div>
+                                <div class="preview-label">Artists (Lifetime)</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="preview-sidebar" class="tab-content">
+                    <div class="preview-box">
+                        <div style="display: flex; flex-direction: column; gap: 15px; max-width: 250px;">
+                            <div class="preview-item" style="text-align: left; display: flex; justify-content: space-between; align-items: center; padding: 15px 25px;">
+                                <div class="preview-label">Followers</div>
+                                <div class="preview-value" style="font-size: 28px;">1,234</div>
+                            </div>
+                            <div class="preview-item" style="text-align: left; display: flex; justify-content: space-between; align-items: center; padding: 15px 25px;">
+                                <div class="preview-label">Subscribers</div>
+                                <div class="preview-value" style="font-size: 28px;">0 / 150</div>
+                            </div>
+                            <div class="preview-item" style="text-align: left; display: flex; justify-content: space-between; align-items: center; padding: 15px 25px;">
+                                <div class="preview-label">Bits Today</div>
+                                <div class="preview-value" style="font-size: 28px;">5,678</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel" style="margin-top: 20px;">
+                <h2>Quick Export</h2>
+                <p style="font-size: 13px; color: #a0aec0; margin-bottom: 15px;">Copy this to your branding-setup.js file:</p>
+                <textarea id="export-code" style="width: 100%; height: 200px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; padding: 15px; color: #a0aec0; font-family: monospace; font-size: 12px; resize: none;" readonly></textarea>
+                <button class="btn btn-primary" style="margin-top: 15px;" onclick="copyExportCode()">Copy to Clipboard</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const defaultBranding = {
+            fontFamily: "'Segoe UI', Arial, sans-serif",
+            fontSize: { value: 42, label: 16 },
+            colors: {
+                primary: '#9146ff',
+                monthly: '#ff6b6b',
+                lifetime: '#ffd700',
+                label: '#aaaaaa'
+            },
+            background: {
+                enabled: false,
+                color: 'rgba(0,0,0,0.3)',
+                borderRadius: 10
+            },
+            border: {
+                width: 0,
+                style: 'solid'
+            },
+            layout: {
+                padding: '5px 5px',
+                gap: 5,
+                labelPosition: 'top'
+            }
+        };
+
+        let currentBranding = JSON.parse(JSON.stringify(defaultBranding));
+
+        function init() {
+            loadBranding();
+            setupEventListeners();
+            updatePreview();
+            updateExportCode();
+        }
+
+        function loadBranding() {
+            try {
+                const stored = localStorage.getItem('brandingConfig');
+                if (stored) {
+                    currentBranding = JSON.parse(stored);
+                }
+            } catch (e) {
+                currentBranding = JSON.parse(JSON.stringify(defaultBranding));
+            }
+            applyToControls();
+        }
+
+        function applyToControls() {
+            document.getElementById('color-primary').value = currentBranding.colors.primary;
+            document.getElementById('color-primary-picker').value = currentBranding.colors.primary;
+            document.getElementById('color-monthly').value = currentBranding.colors.monthly;
+            document.getElementById('color-monthly-picker').value = currentBranding.colors.monthly;
+            document.getElementById('color-lifetime').value = currentBranding.colors.lifetime;
+            document.getElementById('color-lifetime-picker').value = currentBranding.colors.lifetime;
+            document.getElementById('color-label').value = currentBranding.colors.label;
+            document.getElementById('color-label-picker').value = currentBranding.colors.label;
+
+            document.getElementById('font-family').value = currentBranding.fontFamily;
+            document.getElementById('font-size-value').value = currentBranding.fontSize.value;
+            document.getElementById('font-size-label').value = currentBranding.fontSize.label;
+            document.getElementById('font-size-value-display').textContent = currentBranding.fontSize.value;
+            document.getElementById('font-size-label-display').textContent = currentBranding.fontSize.label;
+
+            document.getElementById('bg-enabled').checked = currentBranding.background.enabled;
+            document.getElementById('bg-color').value = currentBranding.background.color;
+            document.getElementById('bg-color-picker').value = '#000000';
+            document.getElementById('border-width').value = currentBranding.border.width;
+            document.getElementById('border-width-display').textContent = currentBranding.border.width;
+            document.getElementById('border-radius').value = currentBranding.background.borderRadius;
+            document.getElementById('border-radius-display').textContent = currentBranding.background.borderRadius;
+
+            document.getElementById('label-position').value = currentBranding.layout.labelPosition;
+        }
+
+        function setupEventListeners() {
+            const colorFields = ['primary', 'monthly', 'lifetime', 'label'];
+            colorFields.forEach(color => {
+                const picker = document.getElementById(`color-${color}-picker`);
+                const text = document.getElementById(`color-${color}`);
+
+                picker.addEventListener('input', (e) => {
+                    text.value = e.target.value;
+                    currentBranding.colors[color] = e.target.value;
+                    updatePreview();
+                    updateExportCode();
+                });
+
+                text.addEventListener('input', (e) => {
+                    if (/^#[0-9A-Fa-f]{6}$/.test(e.target.value)) {
+                        picker.value = e.target.value;
+                        currentBranding.colors[color] = e.target.value;
+                        updatePreview();
+                        updateExportCode();
+                    }
+                });
+            });
+
+            document.getElementById('font-family').addEventListener('change', (e) => {
+                currentBranding.fontFamily = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('font-size-value').addEventListener('input', (e) => {
+                currentBranding.fontSize.value = parseInt(e.target.value);
+                document.getElementById('font-size-value-display').textContent = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('font-size-label').addEventListener('input', (e) => {
+                currentBranding.fontSize.label = parseInt(e.target.value);
+                document.getElementById('font-size-label-display').textContent = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('bg-enabled').addEventListener('change', (e) => {
+                currentBranding.background.enabled = e.target.checked;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('bg-color').addEventListener('input', (e) => {
+                currentBranding.background.color = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('border-width').addEventListener('input', (e) => {
+                currentBranding.border.width = parseInt(e.target.value);
+                document.getElementById('border-width-display').textContent = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('border-radius').addEventListener('input', (e) => {
+                currentBranding.background.borderRadius = parseInt(e.target.value);
+                document.getElementById('border-radius-display').textContent = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+
+            document.getElementById('label-position').addEventListener('change', (e) => {
+                currentBranding.layout.labelPosition = e.target.value;
+                updatePreview();
+                updateExportCode();
+            });
+        }
+
+        function setColor(type, color) {
+            currentBranding.colors[type] = color;
+            document.getElementById(`color-${type}`).value = color;
+            document.getElementById(`color-${type}-picker`).value = color;
+            updatePreview();
+            updateExportCode();
+        }
+
+        function updatePreview() {
+            const root = document.documentElement;
+
+            root.style.setProperty('--font-family', currentBranding.fontFamily);
+            root.style.setProperty('--font-size', currentBranding.fontSize.value + 'px');
+            root.style.setProperty('--font-size-label', currentBranding.fontSize.label + 'px');
+            root.style.setProperty('--font-weight', 'bold');
+
+            root.style.setProperty('--color-primary', currentBranding.colors.primary);
+            root.style.setProperty('--color-monthly', currentBranding.colors.monthly);
+            root.style.setProperty('--color-lifetime', currentBranding.colors.lifetime);
+            root.style.setProperty('--color-label', currentBranding.colors.label);
+
+            if (currentBranding.background.enabled) {
+                root.style.setProperty('--bg-color', currentBranding.background.color);
+                root.style.setProperty('--border-radius', currentBranding.background.borderRadius + 'px');
+            } else {
+                root.style.setProperty('--bg-color', 'transparent');
+                root.style.setProperty('--border-radius', '0');
+            }
+
+            root.style.setProperty('--border-width', currentBranding.border.width + 'px');
+            root.style.setProperty('--border-style', currentBranding.border.style);
+
+            const valueOrder = currentBranding.layout.labelPosition === 'top' ? 2 : 1;
+            const labelOrder = currentBranding.layout.labelPosition === 'top' ? 1 : 2;
+            root.style.setProperty('--value-order', valueOrder);
+            root.style.setProperty('--label-order', labelOrder);
+
+            document.querySelectorAll('.preview-item').forEach(item => {
+                item.style.borderColor = currentBranding.colors.primary;
+            });
+            document.querySelectorAll('.preview-item.monthly').forEach(item => {
+                item.style.borderColor = currentBranding.colors.monthly;
+            });
+            document.querySelectorAll('.preview-item.lifetime').forEach(item => {
+                item.style.borderColor = currentBranding.colors.lifetime;
+            });
+        }
+
+        function updateExportCode() {
+            const code = `// Central Configuration for All Widgets
+// Generated by Branding Color Selector
+
+const WIDGET_CONFIG = {
+    fontFamily: "${currentBranding.fontFamily}",
+    fontSize: {
+        value: ${currentBranding.fontSize.value},
+        label: ${currentBranding.fontSize.label}
+    },
+    fontWeight: "bold",
+
+    colors: {
+        primary: "${currentBranding.colors.primary}",
+        monthly: "${currentBranding.colors.monthly}",
+        yearly: "${currentBranding.colors.lifetime}",
+        label: "${currentBranding.colors.label}",
+        textShadow: "rgba(0,0,0,0.8)"
+    },
+
+    background: {
+        enabled: ${currentBranding.background.enabled},
+        color: "${currentBranding.background.color}",
+        borderRadius: ${currentBranding.background.borderRadius}
+    },
+
+    border: {
+        width: ${currentBranding.border.width},
+        style: "solid"
+    },
+
+    layout: {
+        padding: "5px 5px",
+        gap: 5,
+        labelPosition: "${currentBranding.layout.labelPosition}"
+    }
+};`;
+            document.getElementById('export-code').value = code;
+        }
+
+        function saveBranding() {
+            try {
+                localStorage.setItem('brandingConfig', JSON.stringify(currentBranding));
+                showStatus('Branding saved successfully!', true);
+            } catch (e) {
+                showStatus('Failed to save branding', false);
+            }
+        }
+
+        function resetBranding() {
+            currentBranding = JSON.parse(JSON.stringify(defaultBranding));
+            applyToControls();
+            updatePreview();
+            updateExportCode();
+            showStatus('Reset to defaults', true);
+        }
+
+        function showStatus(message, success) {
+            const el = document.getElementById('status-message');
+            el.textContent = message;
+            el.className = 'status-message ' + (success ? 'success' : 'error');
+            setTimeout(() => {
+                el.className = 'status-message';
+            }, 3000);
+        }
+
+        function showPreviewTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById('preview-' + tab).classList.add('active');
+        }
+
+        function copyExportCode() {
+            const textarea = document.getElementById('export-code');
+            textarea.select();
+            document.execCommand('copy');
+            showStatus('Copied to clipboard!', true);
+        }
+
+        init();
+    </script>
+</body>
+</html>

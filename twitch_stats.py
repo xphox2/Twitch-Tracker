@@ -547,7 +547,7 @@ def import_csv_history(folder):
                         except:
                             pass
 
-                    if tier1 == 0 and tier2 == 0 and tier3 == 0:
+                    if bits == 0 and tier1 == 0 and tier2 == 0 and tier3 == 0:
                         continue
 
                     try:
@@ -567,15 +567,16 @@ def import_csv_history(folder):
 
                     subs_revenue = (tier1 * 2.50) + (tier2 * 5.00) + (tier3 * 24.99)
 
+                    artist_bits = bits * 0.30
+                    artist_subs = subs_revenue * 0.30
+
                     current_monthly_bits = earnings_data["monthly_bits"].get(month, 0)
                     current_monthly_subs = earnings_data["monthly_subs"].get(month, 0)
 
-                    if bits > current_monthly_bits:
-                        earnings_data["monthly_bits"][month] = bits
-                    if subs_revenue > current_monthly_subs:
-                        earnings_data["monthly_subs"][month] = subs_revenue
+                    earnings_data["monthly_bits"][month] = round(current_monthly_bits + artist_bits, 2)
+                    earnings_data["monthly_subs"][month] = round(current_monthly_subs + artist_subs, 2)
 
-                    print(f"  {month}: ${bits:,.2f} bits, Tier1={tier1}, Tier2={tier2}, Tier3={tier3}")
+                    print(f"  {month}: ${artist_bits:,.2f} artist bits (${bits:,.2f} total), Tier1={tier1}, Tier2={tier2}, Tier3={tier3}, Artist Subs=${artist_subs:,.2f}")
 
         except Exception as e:
             print(f"  Error reading {filename}: {e}")

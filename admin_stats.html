@@ -239,6 +239,28 @@
             margin-left: 8px;
         }
 
+        .reset-btn {
+            background: #e53e3e;
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        .reset-btn:hover {
+            background: #c53030;
+        }
+
+        .current-goal {
+            font-size: 12px;
+            color: #718096;
+            margin-top: 8px;
+        }
+
         .empty-message {
             padding: 40px;
             text-align: center;
@@ -351,6 +373,8 @@
 
     <div style="text-align: center;">
         <button class="refresh-btn" onclick="loadAllData()">Refresh Data</button>
+        <button class="reset-btn" onclick="resetSubscriberGoal()">Reset Subscriber Goal to 1/150</button>
+        <div class="current-goal" id="current-goal-display"></div>
     </div>
 
     <script>
@@ -370,6 +394,29 @@
                 hour: '2-digit',
                 minute: '2-digit'
             });
+        }
+
+        function getStoredSubscriberData() {
+            const stored = localStorage.getItem('subscriberGoalData');
+            if (stored) {
+                return JSON.parse(stored);
+            }
+            return {
+                currentMonth: new Date().toISOString().slice(0, 7),
+                currentCount: 0,
+                goal: 150
+            };
+        }
+
+        function resetSubscriberGoal() {
+            const data = {
+                currentMonth: new Date().toISOString().slice(0, 7),
+                currentCount: 1,
+                goal: 150
+            };
+            localStorage.setItem('subscriberGoalData', JSON.stringify(data));
+            loadAllData();
+            alert('Subscriber goal reset to 1 / 150');
         }
 
         async function loadAllData() {
@@ -463,6 +510,10 @@
                         allSubsList.innerHTML += row;
                     });
                 }
+
+                const goalData = getStoredSubscriberData();
+                document.getElementById('current-goal-display').textContent =
+                    `Current Sidebar Goal: ${goalData.currentCount} / ${goalData.goal} (${goalData.currentMonth})`;
 
             } catch (e) {
                 console.error('Error loading data:', e);
