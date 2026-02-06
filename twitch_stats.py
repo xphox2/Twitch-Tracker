@@ -511,78 +511,59 @@ def import_csv_history(folder):
                     print(f"  Empty file")
                     continue
 
-                fieldnames = [col.lower().strip() for col in reader.fieldnames]
                 print(f"  Columns: {', '.join(reader.fieldnames)}")
 
                 for row in reader:
-                    row_lower = {k.lower().strip(): v for k, v in row.items()}
-
-                    date = (row_lower.get('date') or row_lower.get('month') or
-                            row_lower.get('time') or row_lower.get('period') or '').strip()
+                    date = row.get('Date', '').strip()
                     if not date:
                         continue
 
                     bits = 0
-                    for col in ['bits used', 'bits', 'total bits', 'bits_used']:
-                        if col in row_lower and row_lower[col]:
-                            try:
-                                bits = float(row_lower[col].replace(',', ''))
-                                break
-                            except:
-                                pass
+                    bits_col = row.get('Bits Revenue', '').strip()
+                    if bits_col:
+                        try:
+                            bits = float(bits_col.replace('$', '').replace(',', ''))
+                        except:
+                            pass
 
                     tier1 = tier2 = tier3 = 0
-                    for col, target in [('tier 1', 1), ('tier1', 1), ('tier_1', 1),
-                                       ('tier 2', 2), ('tier2', 2), ('tier_2', 2),
-                                       ('tier 3', 3), ('tier3', 3), ('tier_3', 3)]:
-                        if col in row_lower and row_lower[col]:
-                            try:
-                                val = int(row_lower[col].replace(',', ''))
-                                if target == 1:
-                                    tier1 = val
-                                elif target == 2:
-                                    tier2 = val
-                                else:
-                                    tier3 = val
-                            except:
-                                pass
+                    tier1_col = row.get('Tier 1 subs', '').strip()
+                    tier2_col = row.get('Tier 2 subs', '').strip()
+                    tier3_col = row.get('Tier 3 subs', '').strip()
 
-                    if tier1 == 0:
-                        for col in ['tier1', 'tier 1 subscriptions']:
-                            if col in row_lower and row_lower[col]:
-                                try:
-                                    tier1 = int(row_lower[col].replace(',', ''))
-                                    break
-                                except:
-                                    pass
-                    if tier2 == 0:
-                        for col in ['tier2', 'tier 2 subscriptions']:
-                            if col in row_lower and row_lower[col]:
-                                try:
-                                    tier2 = int(row_lower[col].replace(',', ''))
-                                    break
-                                except:
-                                    pass
-                    if tier3 == 0:
-                        for col in ['tier3', 'tier 3 subscriptions']:
-                            if col in row_lower and row_lower[col]:
-                                try:
-                                    tier3 = int(row_lower[col].replace(',', ''))
-                                    break
-                                except:
-                                    pass
+                    if tier1_col:
+                        try:
+                            tier1 = int(tier1_col.replace(',', ''))
+                        except:
+                            pass
+                    if tier2_col:
+                        try:
+                            tier2 = int(tier2_col.replace(',', ''))
+                        except:
+                            pass
+                    if tier3_col:
+                        try:
+                            tier3 = int(tier3_col.replace(',', ''))
+                        except:
+                            pass
 
                     if tier1 == 0 and tier2 == 0 and tier3 == 0:
                         continue
 
                     try:
-                        month = datetime.strptime(date, "%Y-%m").strftime("%Y-%m")
+                        month = datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m")
                     except ValueError:
                         try:
-                            month = datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m")
+                            month = datetime.strptime(date, "%m/%d/%Y").strftime("%Y-%m")
                         except ValueError:
-                            print(f"  Skipping invalid date: {date}")
-                            continue
+                            try:
+                                month = datetime.strptime(date, "%a %b %d %Y").strftime("%Y-%m")
+                            except ValueError:
+                                try:
+                                    month = datetime.strptime(date, "%Y-%m").strftime("%Y-%m")
+                                except ValueError:
+                                    print(f"  Skipping invalid date: {date}")
+                                    continue
 
                     subs_revenue = (tier1 * 2.50) + (tier2 * 5.00) + (tier3 * 24.99)
 
@@ -594,7 +575,7 @@ def import_csv_history(folder):
                     if subs_revenue > current_monthly_subs:
                         earnings_data["monthly_subs"][month] = subs_revenue
 
-                    print(f"  {month}: {bits:,.0f} bits, Tier1={tier1}, Tier2={tier2}, Tier3={tier3}")
+                    print(f"  {month}: ${bits:,.2f} bits, Tier1={tier1}, Tier2={tier2}, Tier3={tier3}")
 
         except Exception as e:
             print(f"  Error reading {filename}: {e}")
@@ -610,9 +591,9 @@ def import_csv_history(folder):
 
     print(f"\n" + "=" * 40)
     print("Import complete!")
-    print(f"  Lifetime Bits: {lifetime_bits:,.0f}")
+    print(f"  Lifetime Bits Revenue: ${lifetime_bits:,.2f}")
     print(f"  Lifetime Subs Revenue: ${lifetime_subs:,.2f}")
-    print(f"  Artist Lifetime: ${earnings_data['lifetime_total']:,.2f}")
+    print(f"  Artist Lifetime (30%): ${earnings_data['lifetime_total']:,.2f}")
     print(f"\nRun 'python twitch_stats.py' to start tracking")
 
 class StatsHandler(http.server.SimpleHTTPRequestHandler):
