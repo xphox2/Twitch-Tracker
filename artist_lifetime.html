@@ -76,7 +76,7 @@
     <script>
         async function updateStats() {
             try {
-                const earningsRes = await fetch('data/artist_earnings.json');
+                const earningsRes = await fetch('data/artist_earnings.json?t=' + Date.now(), { cache: 'no-store' });
                 const earnings = await earningsRes.json();
                 document.getElementById('artist-lifetime').textContent = '$' + earnings.lifetime_total.toFixed(2);
             } catch (e) {}

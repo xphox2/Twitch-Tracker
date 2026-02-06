@@ -69,7 +69,7 @@
     <script>
         async function updateStats() {
             try {
-                const response = await fetch('data/latest_stats.json');
+                const response = await fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' });
                 const stats = await response.json();
                 document.getElementById('subscribers').textContent = stats.subscribers;
             } catch (e) {}

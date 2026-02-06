@@ -69,9 +69,9 @@
     <script>
         async function updateStats() {
             try {
-                const response = await fetch('data/latest_stats.json');
+                const response = await fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' });
                 const stats = await response.json();
-                document.getElementById('bits-total').textContent = stats.bits_total;
+                document.getElementById('bits-total').textContent = '$' + (stats.bits_total || 0).toFixed(2);
             } catch (e) {}
         }
         updateStats();

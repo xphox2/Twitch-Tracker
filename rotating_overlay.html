@@ -81,8 +81,8 @@
         const stats = [
             { id: 'followers', label: 'Followers', key: 'followers', class: 'followers' },
             { id: 'subscribers', label: 'Subscribers', key: 'subscribers', class: 'subscribers' },
-            { id: 'bits-today', label: 'Bits Today', key: 'bits_today', class: 'bits-today' },
-            { id: 'bits-total', label: 'Bits Total', key: 'bits_total', class: 'bits-total' },
+            { id: 'bits-today', label: 'Bits Today', key: 'bits_today', class: 'bits-today', prefix: '$' },
+            { id: 'bits-total', label: 'Bits Total', key: 'bits_total', class: 'bits-total', prefix: '$' },
             { id: 'artist-monthly', label: 'Artist (Monthly)', key: 'artist_raise_30', class: 'artist-monthly', prefix: '$' },
             { id: 'artist-lifetime', label: 'Artist (Lifetime)', key: 'artist_yearly', class: 'artist-lifetime', prefix: '$' }
         ];
@@ -93,7 +93,7 @@
 
         async function updateStats() {
             try {
-                const response = await fetch('data/latest_stats.json');
+                const response = await fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' });
                 statsData = await response.json();
                 showCurrentStat();
             } catch (e) {

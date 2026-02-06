@@ -128,20 +128,21 @@
         async function updateStats() {
             try {
                 const [statsRes, earningsRes] = await Promise.all([
-                    fetch('data/latest_stats.json'),
-                    fetch('data/artist_earnings.json')
+                    fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' }),
+                    fetch('data/artist_earnings.json?t=' + Date.now(), { cache: 'no-store' })
                 ]);
                 const stats = await statsRes.json();
                 const earnings = await earningsRes.json();
 
                 document.getElementById('followers').textContent = stats.followers;
                 document.getElementById('subscribers').textContent = stats.subscribers;
-                document.getElementById('bits-today').textContent = stats.bits_today;
-                document.getElementById('bits-total').textContent = stats.bits_total;
+                document.getElementById('bits-today').textContent = '$' + (stats.bits_today || 0).toFixed(2);
+                document.getElementById('bits-total').textContent = '$' + (stats.bits_total || 0).toFixed(2);
 
                 const monthly = earnings.monthly_bits?.[new Date().toISOString().slice(0, 7)] || 0;
                 const monthlySubs = earnings.monthly_subs?.[new Date().toISOString().slice(0, 7)] || 0;
-                document.getElementById('artist-monthly').textContent = '$' + (monthly + monthlySubs).toFixed(2);
+                const monthlyGifted = earnings.monthly_gifted?.[new Date().toISOString().slice(0, 7)] || 0;
+                document.getElementById('artist-monthly').textContent = '$' + (monthly + monthlySubs + monthlyGifted).toFixed(2);
                 document.getElementById('artist-lifetime').textContent = '$' + earnings.lifetime_total.toFixed(2);
 
                 document.getElementById('timestamp').textContent = 'Updated: ' + stats.timestamp.replace('T', ' ').slice(0, 19);

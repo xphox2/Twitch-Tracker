@@ -313,6 +313,24 @@
         </div>
     </div>
 
+    <div class="tier-row">
+        <div class="tier-card tier-1">
+            <div class="tier-name">Tier 1 Gifted</div>
+            <div class="stat-value" id="gifted-tier1-count">0</div>
+            <div class="stat-label">Gifted</div>
+        </div>
+        <div class="tier-card tier-2">
+            <div class="tier-name">Tier 2 Gifted</div>
+            <div class="stat-value" id="gifted-tier2-count">0</div>
+            <div class="stat-label">Gifted</div>
+        </div>
+        <div class="tier-card tier-3">
+            <div class="tier-name">Tier 3 Gifted</div>
+            <div class="stat-value" id="gifted-tier3-count">0</div>
+            <div class="stat-label">Gifted</div>
+        </div>
+    </div>
+
     <div class="section">
         <div class="section-header">
             <h2>Subscriber History</h2>
@@ -422,9 +440,9 @@
         async function loadAllData() {
             try {
                 const [latestRes, subsRes, earningsRes] = await Promise.all([
-                    fetch('data/latest_stats.json'),
-                    fetch('data/subscribers.json'),
-                    fetch('data/artist_earnings.json')
+                    fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' }),
+                    fetch('data/subscribers.json?t=' + Date.now(), { cache: 'no-store' }),
+                    fetch('data/artist_earnings.json?t=' + Date.now(), { cache: 'no-store' })
                 ]);
 
                 const latest = await latestRes.json();
@@ -433,13 +451,17 @@
 
                 document.getElementById('total-subs').textContent = (latest.subscribers || 0).toLocaleString();
                 document.getElementById('total-followers').textContent = (latest.followers || 0).toLocaleString();
-                document.getElementById('total-bits').textContent = (latest.bits_total || 0).toLocaleString();
+                document.getElementById('total-bits').textContent = '$' + (latest.bits_total || 0).toFixed(2);
                 document.getElementById('total-subs-revenue').textContent = '$' + (latest.subs_total_revenue || 0).toLocaleString();
                 document.getElementById('artist-lifetime').textContent = '$' + (earnings.lifetime_total || 0).toLocaleString();
 
                 document.getElementById('tier1-count').textContent = latest.tiers?.["1000"] || 0;
                 document.getElementById('tier2-count').textContent = latest.tiers?.["2000"] || 0;
                 document.getElementById('tier3-count').textContent = latest.tiers?.["3000"] || 0;
+
+                document.getElementById('gifted-tier1-count').textContent = latest.gifted_tiers?.["1000"] || 0;
+                document.getElementById('gifted-tier2-count').textContent = latest.gifted_tiers?.["2000"] || 0;
+                document.getElementById('gifted-tier3-count').textContent = latest.gifted_tiers?.["3000"] || 0;
 
                 const history = subs.history || [];
                 const subsData = subs.subs || {};
@@ -463,7 +485,8 @@
                     newSubsList.innerHTML = '<tr><td colspan="4" class="empty-message">No new subs yet</td></tr>';
                 } else {
                     newSubs.slice(0, 100).forEach(sub => {
-                        const tier = sub.tier ? '$' + (parseInt(sub.tier) / 1000 * 2.5).toFixed(2) : '-';
+                        const tierValue = { '1000': 2.50, '2000': 5.00, '3000': 24.99 }[sub.tier];
+                        const tier = tierValue ? '$' + tierValue.toFixed(2) : '-';
                         const row = `<tr>
                             <td><strong>${sub.user_name || sub.user_id}</strong></td>
                             <td>${tier}</td>

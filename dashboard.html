@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twitch Stats Dashboard - Yearly Overview</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .dashboard-header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+        }
+
+        .dashboard-header h1 {
+            font-size: 2.5em;
+            background: linear-gradient(90deg, #9146ff, #ff6b6b, #ffd700);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .date-range {
+            color: #aaa;
+            font-size: 1.1em;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .tab-btn {
+            padding: 12px 25px;
+            background: rgba(255,255,255,0.1);
+            border: 2px solid #9146ff;
+            color: #fff;
+            border-radius: 25px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 1em;
+        }
+
+        .tab-btn:hover, .tab-btn.active {
+            background: #9146ff;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(145, 70, 255, 0.4);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.5s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.08);
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            border-color: #9146ff;
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #aaa;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .stat-change {
+            font-size: 0.85em;
+            margin-top: 8px;
+            padding: 4px 10px;
+            border-radius: 15px;
+            display: inline-block;
+        }
+
+        .stat-change.positive {
+            background: rgba(46, 213, 115, 0.2);
+            color: #2ed573;
+        }
+
+        .stat-change.negative {
+            background: rgba(255, 71, 87, 0.2);
+            color: #ff4757;
+        }
+
+        .chart-container {
+            background: rgba(255,255,255,0.05);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 25px;
+            backdrop-filter: blur(10px);
+        }
+
+        .chart-title {
+            font-size: 1.3em;
+            margin-bottom: 20px;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .chart-title::before {
+            content: '';
+            width: 4px;
+            height: 20px;
+            background: #9146ff;
+            border-radius: 2px;
+        }
+
+        .chart-wrapper {
+            position: relative;
+            height: 300px;
+        }
+
+        .tier-breakdown {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+        }
+
+        .tier-card {
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .tier-1 { border-left: 4px solid #9146ff; }
+        .tier-2 { border-left: 4px solid #2ed573; }
+        .tier-3 { border-left: 4px solid #ffd700; }
+
+        .tier-value {
+            font-size: 1.8em;
+            font-weight: bold;
+        }
+
+        .tier-label {
+            color: #aaa;
+            font-size: 0.85em;
+        }
+
+        .tier-revenue {
+            color: #2ed573;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 25px;
+        }
+
+        @media (max-width: 768px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .table-container {
+            overflow-x: auto;
+            margin-top: 20px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        th {
+            background: rgba(145, 70, 255, 0.3);
+            color: #fff;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 1px;
+        }
+
+        tr:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        .stream-row {
+            cursor: pointer;
+            transition: background 0.3s ease;
+        }
+
+        .stream-row:hover {
+            background: rgba(145, 70, 255, 0.2);
+        }
+
+        .heatmap-container {
+            display: grid;
+            gap: 3px;
+            margin-top: 20px;
+        }
+
+        .heatmap-row {
+            display: flex;
+            gap: 3px;
+        }
+
+        .heatmap-cell {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .heatmap-cell:hover {
+            transform: scale(1.3);
+            z-index: 10;
+        }
+
+        .heatmap-legend {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 15px;
+            justify-content: center;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #aaa;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(255,255,255,0.1);
+            border-top: 4px solid #9146ff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .summary-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .summary-item {
+            background: rgba(255,255,255,0.05);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .summary-item .value {
+            font-size: 2em;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .summary-item .label {
+            color: #aaa;
+            font-size: 0.85em;
+        }
+
+        .month-navigation {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .nav-btn {
+            padding: 10px 20px;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            color: #fff;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .nav-btn:hover {
+            background: #9146ff;
+        }
+
+        .current-month {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+
+        .week-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 5px;
+            margin-top: 20px;
+        }
+
+        .week-day-header {
+            text-align: center;
+            padding: 10px;
+            color: #aaa;
+            font-size: 0.85em;
+        }
+
+        .week-cell {
+            background: rgba(255,255,255,0.05);
+            padding: 15px 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .week-cell.has-data {
+            background: rgba(145, 70, 255, 0.2);
+            border: 1px solid #9146ff;
+        }
+
+        .week-cell .date {
+            font-size: 0.8em;
+            color: #aaa;
+            margin-bottom: 5px;
+        }
+
+        .week-cell .value {
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+
+        .week-cell .revenue {
+            font-size: 0.85em;
+            color: #2ed573;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-header">
+        <h1>Twitch Stats Dashboard</h1>
+        <p class="date-range" id="dateRange">Loading...</p>
+    </div>
+
+    <div class="tabs">
+        <button class="tab-btn active" data-tab="yearly">Yearly Overview</button>
+        <button class="tab-btn" data-tab="monthly">Monthly</button>
+        <button class="tab-btn" data-tab="weekly">Weekly</button>
+        <button class="tab-btn" data-tab="streams">Stream Breakdown</button>
+    </div>
+
+    <div id="loading" class="loading">
+        <div class="spinner"></div>
+        <p>Loading stats data...</p>
+    </div>
+
+    <div id="dashboard" style="display: none;">
+        <!-- Yearly Overview Tab -->
+        <div id="yearly" class="tab-content active">
+            <div class="stats-grid" id="yearlyStatsGrid"></div>
+            
+            <div class="chart-container">
+                <h3 class="chart-title">Revenue Over Time</h3>
+                <div class="chart-wrapper">
+                    <canvas id="yearlyRevenueChart"></canvas>
+                </div>
+            </div>
+
+            <div class="grid-2">
+                <div class="chart-container">
+                    <h3 class="chart-title">Subscribers by Tier</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="yearlyTiersChart"></canvas>
+                    </div>
+                    <div class="tier-breakdown">
+                        <div class="tier-card tier-1">
+                            <div class="tier-value" id="tier1Count">0</div>
+                            <div class="tier-label">Tier 1 ($2.50)</div>
+                            <div class="tier-revenue" id="tier1Revenue">$0.00</div>
+                        </div>
+                        <div class="tier-card tier-2">
+                            <div class="tier-value" id="tier2Count">0</div>
+                            <div class="tier-label">Tier 2 ($5.00)</div>
+                            <div class="tier-revenue" id="tier2Revenue">$0.00</div>
+                        </div>
+                        <div class="tier-card tier-3">
+                            <div class="tier-value" id="tier3Count">0</div>
+                            <div class="tier-label">Tier 3 ($24.99)</div>
+                            <div class="tier-revenue" id="tier3Revenue">$0.00</div>
+                        </div>
+                    </div>
+                    <h4 style="margin: 20px 0 10px; color: #ffd700;">Gifted Subs</h4>
+                    <div class="tier-breakdown">
+                        <div class="tier-card tier-1">
+                            <div class="tier-value" id="giftedTier1Count">0</div>
+                            <div class="tier-label">Tier 1 Gifted</div>
+                            <div class="tier-revenue" id="giftedTier1Revenue">$0.00</div>
+                        </div>
+                        <div class="tier-card tier-2">
+                            <div class="tier-value" id="giftedTier2Count">0</div>
+                            <div class="tier-label">Tier 2 Gifted</div>
+                            <div class="tier-revenue" id="giftedTier2Revenue">$0.00</div>
+                        </div>
+                        <div class="tier-card tier-3">
+                            <div class="tier-value" id="giftedTier3Count">0</div>
+                            <div class="tier-label">Tier 3 Gifted</div>
+                            <div class="tier-revenue" id="giftedTier3Revenue">$0.00</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <h3 class="chart-title">Activity Heatmap (Bits/Day)</h3>
+                    <div id="heatmap" class="heatmap-container"></div>
+                    <div class="heatmap-legend">
+                        <span>Low</span>
+                        <div class="legend-color" style="background: rgba(46, 213, 115, 0.2);"></div>
+                        <div class="legend-color" style="background: rgba(46, 213, 115, 0.5);"></div>
+                        <div class="legend-color" style="background: rgba(46, 213, 115, 0.8);"></div>
+                        <div class="legend-color" style="background: rgba(46, 213, 115, 1);"></div>
+                        <span>High</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chart-container">
+                <h3 class="chart-title">Monthly Breakdown</h3>
+                <div class="table-container">
+                    <table id="monthlyTable">
+                        <thead>
+                            <tr>
+                                <th>Month</th>
+                                <th>Subscribers</th>
+                                <th>Followers</th>
+                                <th>Bits</th>
+                                <th>Revenue</th>
+                                <th>Gifted</th>
+                                <th>Artist Raise</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Monthly Tab -->
+        <div id="monthly" class="tab-content">
+            <div class="month-navigation">
+                <button class="nav-btn" id="prevMonth">← Previous</button>
+                <span class="current-month" id="currentMonth">Select a Month</span>
+                <button class="nav-btn" id="nextMonth">Next →</button>
+            </div>
+            <div class="stats-grid" id="monthlyStatsGrid"></div>
+            <div class="chart-container">
+                <h3 class="chart-title">Daily Stats</h3>
+                <div class="chart-wrapper">
+                    <canvas id="monthlyChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3 class="chart-title">Daily Breakdown</h3>
+                <div class="table-container">
+                    <table id="dailyTable">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Subscribers</th>
+                                <th>Followers</th>
+                                <th>Bits Today</th>
+                                <th>Bits Total</th>
+                                <th>Revenue</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Weekly Tab -->
+        <div id="weekly" class="tab-content">
+            <div class="month-navigation">
+                <button class="nav-btn" id="prevWeek">← Previous</button>
+                <span class="current-week" id="currentWeek">Select a Week</span>
+                <button class="nav-btn" id="nextWeek">Next →</button>
+            </div>
+            <div class="stats-grid" id="weeklyStatsGrid"></div>
+            <div class="chart-container">
+                <h3 class="chart-title">Week Overview</h3>
+                <div class="week-grid" id="weekGrid">
+                    <div class="week-day-header">Sun</div>
+                    <div class="week-day-header">Mon</div>
+                    <div class="week-day-header">Tue</div>
+                    <div class="week-day-header">Wed</div>
+                    <div class="week-day-header">Thu</div>
+                    <div class="week-day-header">Fri</div>
+                    <div class="week-day-header">Sat</div>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3 class="chart-title">Weekly Trends</h3>
+                <div class="chart-wrapper">
+                    <canvas id="weeklyChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Streams Tab -->
+        <div id="streams" class="tab-content">
+            <div class="stats-grid" id="streamStatsGrid"></div>
+            <div class="chart-container">
+                <h3 class="chart-title">Stream Sessions</h3>
+                <p style="color: #aaa; margin-bottom: 15px;">Based on days with recorded activity</p>
+                <div class="table-container">
+                    <table id="streamsTable">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Subscribers</th>
+                                <th>Followers</th>
+                                <th>Bits</th>
+                                <th>Revenue</th>
+                                <th>Artist Raise</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="grid-2">
+                <div class="chart-container">
+                    <h3 class="chart-title">Stream Duration Impact</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="streamBitsChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <h3 class="chart-title">Best Streaming Days</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="bestDaysChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allData = [];
+        let yearlyRevenueChart, yearlyTiersChart, monthlyChart, weeklyChart, streamBitsChart, bestDaysChart;
+
+        async function loadData() {
+            try {
+                const response = await fetch('/data/archive/daily/');
+                const html = await response.text();
+                
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const links = doc.querySelectorAll('a');
+                
+                allData = [];
+                for (const link of links) {
+                    const href = link.getAttribute('href');
+                    if (href && href.startsWith('stats_archive_') && href.endsWith('.csv')) {
+                        const dateStr = href.replace('stats_archive_', '').replace('.csv', '');
+                        try {
+                            const fileDate = new Date(dateStr);
+                            if (!isNaN(fileDate.getTime())) {
+                                const fileResponse = await fetch('/data/archive/daily/' + href);
+                                const csvText = await fileResponse.text();
+                                const rows = csvText.split('\n').slice(1).filter(row => row.trim());
+                                if (rows.length > 0) {
+                                    const headers = rows[0].split(',');
+                                    const values = rows[rows.length - 1].split(',');
+                                    const stats = {};
+                                    headers.forEach((header, i) => {
+                                        let value = values[i]?.trim() || '0';
+                                        if (header === 'timestamp') {
+                                            stats[header] = value;
+                                        } else {
+                                            stats[header] = parseFloat(value) || 0;
+                                        }
+                                    });
+                                    stats.date = dateStr;
+                                    allData.push(stats);
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Failed to load:', href);
+                        }
+                    }
+                }
+                
+                allData.sort((a, b) => new Date(a.date) - new Date(b.date));
+                processData();
+            } catch (error) {
+                console.error('Error loading data:', error);
+                document.getElementById('loading').innerHTML = '<p>Error loading data. Make sure the tracker is running.</p>';
+            }
+        }
+
+        function processData() {
+            if (allData.length === 0) {
+                document.getElementById('loading').innerHTML = '<p>No data found. Start the tracker to collect stats.</p>';
+                return;
+            }
+
+            const firstDate = allData[0]?.date;
+            const lastDate = allData[allData.length - 1]?.date;
+            document.getElementById('dateRange').textContent = `${formatDate(firstDate)} - ${formatDate(lastDate)} (${allData.length} days)`;
+
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+
+            renderYearlyOverview();
+            initTabs();
+        }
+
+        function formatDate(dateStr) {
+            const date = new Date(dateStr);
+            return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function renderYearlyOverview() {
+            const totals = calculateYearlyTotals();
+            
+            document.getElementById('yearlyStatsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #9146ff;">${formatNumber(totals.totalSubscribers)}</div>
+                    <div class="stat-label">Total Subscribers</div>
+                    <div class="stat-change positive">Current</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ff6b6b;">${formatNumber(totals.totalFollowers)}</div>
+                    <div class="stat-label">Total Followers</div>
+                    <div class="stat-change positive">Current</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ffd700;">${formatNumber(totals.totalBits)}</div>
+                    <div class="stat-label">Total Bits</div>
+                    <div class="stat-change positive">+${formatNumber(totals.bitsThisYear)} this year</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #2ed573;">$${formatNumber(totals.totalRevenue)}</div>
+                    <div class="stat-label">Total Revenue</div>
+                    <div class="stat-change positive">+$${formatNumber(totals.revenueThisYear)} this year</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #00d2d3;">$${formatNumber(totals.artistRaise)}</div>
+                    <div class="stat-label">Artist Raise (30%)</div>
+                    <div class="stat-change positive">+$${formatNumber(totals.artistThisYear)} this year</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${allData.length}</div>
+                    <div class="stat-label">Days Tracked</div>
+                    <div class="stat-change positive">365 day retention</div>
+                </div>
+            `;
+
+            document.getElementById('tier1Count').textContent = formatNumber(totals.tiers['1000'] || 0);
+            document.getElementById('tier1Revenue').textContent = '$' + formatNumber((totals.tiers['1000'] || 0) * 2.50);
+            document.getElementById('tier2Count').textContent = formatNumber(totals.tiers['2000'] || 0);
+            document.getElementById('tier2Revenue').textContent = '$' + formatNumber((totals.tiers['2000'] || 0) * 5.00);
+            document.getElementById('tier3Count').textContent = formatNumber(totals.tiers['3000'] || 0);
+            document.getElementById('tier3Revenue').textContent = '$' + formatNumber((totals.tiers['3000'] || 0) * 24.99);
+
+            document.getElementById('giftedTier1Count').textContent = formatNumber(totals.gifted_tiers?.['1000'] || 0);
+            document.getElementById('giftedTier1Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['1000'] || 0) * 2.50);
+            document.getElementById('giftedTier2Count').textContent = formatNumber(totals.gifted_tiers?.['2000'] || 0);
+            document.getElementById('giftedTier2Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['2000'] || 0) * 5.00);
+            document.getElementById('giftedTier3Count').textContent = formatNumber(totals.gifted_tiers?.['3000'] || 0);
+            document.getElementById('giftedTier3Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['3000'] || 0) * 24.99);
+
+            renderYearlyCharts(totals);
+            renderHeatmap();
+            renderMonthlyTable();
+        }
+
+        function calculateYearlyTotals() {
+            let totalBits = 0, totalRevenue = 0, artistRaise = 0;
+            let bitsThisYear = 0, revenueThisYear = 0, artistThisYear = 0;
+            let totalFollowers = 0, totalSubscribers = 0;
+            let tiers = { '1000': 0, '2000': 0, '3000': 0 };
+            let gifted_tiers = { '1000': 0, '2000': 0, '3000': 0 };
+
+            allData.forEach((day, index) => {
+                if (day.bits_total > totalBits) {
+                    const increment = day.bits_total - totalBits;
+                    bitsThisYear += increment;
+                    totalBits = day.bits_total;
+                }
+                if (day.subs_total_revenue > totalRevenue) {
+                    const increment = day.subs_total_revenue - totalRevenue;
+                    revenueThisYear += increment;
+                    totalRevenue = day.subs_total_revenue;
+                }
+
+                totalFollowers = day.followers || totalFollowers;
+                totalSubscribers = day.subscribers || totalSubscribers;
+
+                if (day.tiers) {
+                    tiers['1000'] = day.tiers['1000'] || tiers['1000'];
+                    tiers['2000'] = day.tiers['2000'] || tiers['2000'];
+                    tiers['3000'] = day.tiers['3000'] || tiers['3000'];
+                }
+
+                if (day.gifted_tiers) {
+                    gifted_tiers['1000'] = day.gifted_tiers['1000'] || gifted_tiers['1000'];
+                    gifted_tiers['2000'] = day.gifted_tiers['2000'] || gifted_tiers['2000'];
+                    gifted_tiers['3000'] = day.gifted_tiers['3000'] || gifted_tiers['3000'];
+                }
+            });
+
+            artistThisYear = (bitsThisYear + revenueThisYear) * 0.30;
+            artistRaise = (totalBits + totalRevenue) * 0.30;
+
+            return {
+                totalBits, totalRevenue, artistRaise,
+                bitsThisYear, revenueThisYear, artistThisYear,
+                totalFollowers, totalSubscribers, tiers, gifted_tiers
+            };
+        }
+
+        function renderYearlyCharts(totals) {
+            const ctx1 = document.getElementById('yearlyRevenueChart').getContext('2d');
+            const ctx2 = document.getElementById('yearlyTiersChart').getContext('2d');
+
+            const labels = allData.map(d => d.date);
+            const bitsData = allData.map(d => d.bits_today || 0);
+            const revenueData = allData.map(d => d.subs_today_revenue || 0);
+
+            if (yearlyRevenueChart) yearlyRevenueChart.destroy();
+            yearlyRevenueChart = new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Bits Today',
+                        data: bitsData,
+                        borderColor: '#ffd700',
+                        backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }, {
+                        label: 'Subs Revenue Today',
+                        data: revenueData,
+                        borderColor: '#2ed573',
+                        backgroundColor: 'rgba(46, 213, 115, 0.1)',
+                        fill: true,
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#fff' } }
+                    },
+                    scales: {
+                        x: { ticks: { color: '#aaa', maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+
+            if (yearlyTiersChart) yearlyTiersChart.destroy();
+            yearlyTiersChart = new Chart(ctx2, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Tier 1 ($2.50)', 'Tier 2 ($5.00)', 'Tier 3 ($24.99)'],
+                    datasets: [{
+                        data: [totals.tiers['1000'] || 0, totals.tiers['2000'] || 0, totals.tiers['3000'] || 0],
+                        backgroundColor: ['#9146ff', '#2ed573', '#ffd700'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#fff' } }
+                    }
+                }
+            });
+        }
+
+        function renderHeatmap() {
+            const container = document.getElementById('heatmap');
+            container.innerHTML = '';
+
+            const bitsValues = allData.map(d => d.bits_today || 0);
+            const maxBits = Math.max(...bitsValues, 1);
+
+            let currentRow = null;
+            allData.forEach((day, index) => {
+                if (index % 7 === 0) {
+                    currentRow = document.createElement('div');
+                    currentRow.className = 'heatmap-row';
+                    container.appendChild(currentRow);
+                }
+
+                const cell = document.createElement('div');
+                cell.className = 'heatmap-cell';
+                const intensity = (day.bits_today || 0) / maxBits;
+                cell.style.background = `rgba(46, 213, 115, ${0.2 + intensity * 0.8})`;
+                cell.title = `${day.date}: ${formatNumber(day.bits_today || 0)} bits`;
+                currentRow.appendChild(cell);
+            });
+        }
+
+        function renderMonthlyTable() {
+            const tbody = document.querySelector('#monthlyTable tbody');
+            const monthlyData = {};
+
+            allData.forEach(day => {
+                const month = day.date.substring(0, 7);
+                if (!monthlyData[month]) {
+                    monthlyData[month] = { subscribers: 0, followers: 0, bits: 0, revenue: 0, gifted: 0, artist: 0 };
+                }
+                if (day.subscribers > monthlyData[month].subscribers) {
+                    monthlyData[month].subscribers = day.subscribers;
+                }
+                if (day.followers > monthlyData[month].followers) {
+                    monthlyData[month].followers = day.followers;
+                }
+                monthlyData[month].bits += day.bits_today || 0;
+                monthlyData[month].revenue += day.subs_today_revenue || 0;
+                monthlyData[month].gifted += (day.gifted_tiers?.['1000'] || 0) * 2.50 + (day.gifted_tiers?.['2000'] || 0) * 5.00 + (day.gifted_tiers?.['3000'] || 0) * 24.99;
+                monthlyData[month].artist += (day.bits_today || 0) * 0.30 + monthlyData[month].gifted * 0.30;
+            });
+
+            tbody.innerHTML = Object.entries(monthlyData)
+                .sort((a, b) => b[0].localeCompare(a[0]))
+                .map(([month, data]) => `
+                    <tr>
+                        <td>${month}</td>
+                        <td>${formatNumber(data.subscribers)}</td>
+                        <td>${formatNumber(data.followers)}</td>
+                        <td>${formatNumber(data.bits)}</td>
+                        <td>$${formatNumber(data.revenue)}</td>
+                        <td>$${formatNumber(data.gifted)}</td>
+                        <td style="color: #00d2d3;">$${formatNumber(data.artist)}</td>
+                    </tr>
+                `).join('');
+        }
+
+        let currentMonthDate = new Date();
+
+        function renderMonthlyView(date) {
+            const monthKey = date.toISOString().substring(0, 7);
+            document.getElementById('currentMonth').textContent = date.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+
+            const monthData = allData.filter(d => d.date.startsWith(monthKey));
+            
+            const totals = {
+                bits: monthData.reduce((sum, d) => sum + (d.bits_today || 0), 0),
+                revenue: monthData.reduce((sum, d) => sum + (d.subs_today_revenue || 0), 0),
+                days: monthData.length
+            };
+
+            document.getElementById('monthlyStatsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${totals.days}</div>
+                    <div class="stat-label">Days Active</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ffd700;">${formatNumber(totals.bits)}</div>
+                    <div class="stat-label">Bits This Month</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #2ed573;">$${formatNumber(totals.revenue)}</div>
+                    <div class="stat-label">Revenue This Month</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #00d2d3;">$${formatNumber(totals.revenue * 0.30)}</div>
+                    <div class="stat-label">Artist Raise</div>
+                </div>
+            `;
+
+            const ctx = document.getElementById('monthlyChart').getContext('2d');
+            if (monthlyChart) monthlyChart.destroy();
+
+            monthlyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: monthData.map(d => d.date),
+                    datasets: [{
+                        label: 'Bits',
+                        data: monthData.map(d => d.bits_today || 0),
+                        backgroundColor: 'rgba(255, 215, 0, 0.7)',
+                        borderRadius: 5
+                    }, {
+                        label: 'Revenue',
+                        data: monthData.map(d => d.subs_today_revenue || 0),
+                        backgroundColor: 'rgba(46, 213, 115, 0.7)',
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { ticks: { color: '#aaa', maxTicksLimit: 15 }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+
+            const tbody = document.querySelector('#dailyTable tbody');
+            tbody.innerHTML = monthData.map(d => `
+                <tr>
+                    <td>${formatDate(d.date)}</td>
+                    <td>${formatNumber(d.subscribers)}</td>
+                    <td>${formatNumber(d.followers)}</td>
+                    <td>${formatNumber(d.bits_today)}</td>
+                    <td>${formatNumber(d.bits_total)}</td>
+                    <td>$${formatNumber(d.subs_today_revenue)}</td>
+                </tr>
+            `).join('');
+        }
+
+        let currentWeekStart = new Date();
+
+        function renderWeeklyView(date) {
+            const startOfWeek = new Date(date);
+            startOfWeek.setDate(date.getDate() - date.getDay());
+            currentWeekStart = startOfWeek;
+
+            const endOfWeek = new Date(startOfWeek);
+            endOfWeek.setDate(startOfWeek.getDate() + 6);
+
+            document.getElementById('currentWeek').textContent = `${formatDate(startOfWeek.toISOString().substring(0, 10))} - ${formatDate(endOfWeek.toISOString().substring(0, 10))}`;
+
+            const weekData = [];
+            for (let i = 0; i < 7; i++) {
+                const dayDate = new Date(startOfWeek);
+                dayDate.setDate(startOfWeek.getDate() + i);
+                const dateStr = dayDate.toISOString().substring(0, 10);
+                const dayStats = allData.find(d => d.date === dateStr) || { date: dateStr, bits_today: 0, subs_today_revenue: 0, subscribers: 0, followers: 0 };
+                weekData.push(dayStats);
+            }
+
+            const totals = {
+                bits: weekData.reduce((sum, d) => sum + (d.bits_today || 0), 0),
+                revenue: weekData.reduce((sum, d) => sum + (d.subs_today_revenue || 0), 0),
+                days: weekData.filter(d => (d.bits_today || 0) > 0).length
+            };
+
+            document.getElementById('weeklyStatsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${totals.days}/7</div>
+                    <div class="stat-label">Days Active</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ffd700;">${formatNumber(totals.bits)}</div>
+                    <div class="stat-label">Bits This Week</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #2ed573;">$${formatNumber(totals.revenue)}</div>
+                    <div class="stat-label">Revenue This Week</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #00d2d3;">$${formatNumber(totals.revenue * 0.30)}</div>
+                    <div class="stat-label">Artist Raise</div>
+                </div>
+            `;
+
+            const weekGrid = document.getElementById('weekGrid');
+            const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            
+            let html = dayNames.map((name, i) => {
+                const day = weekData[i];
+                const hasData = (day.bits_today || 0) > 0;
+                return `
+                    <div class="week-cell ${hasData ? 'has-data' : ''}">
+                        <div class="date">${name}</div>
+                        <div class="value" style="color: #ffd700;">${formatNumber(day.bits_today || 0)}</div>
+                        <div class="revenue">$${formatNumber(day.subs_today_revenue || 0)}</div>
+                    </div>
+                `;
+            }).join('');
+            
+            weekGrid.innerHTML = dayNames.map(n => `<div class="week-day-header">${n}</div>`).join('') + html;
+        }
+
+        function renderStreamsView() {
+            const streamsData = allData.filter(d => (d.bits_today || 0) > 0 || (d.subs_today_revenue || 0) > 0);
+
+            const totals = {
+                streams: streamsData.length,
+                bits: streamsData.reduce((sum, d) => sum + (d.bits_today || 0), 0),
+                revenue: streamsData.reduce((sum, d) => sum + (d.subs_today_revenue || 0), 0),
+                avgBits: streamsData.length > 0 ? streamsData.reduce((sum, d) => sum + (d.bits_today || 0), 0) / streamsData.length : 0
+            };
+
+            document.getElementById('streamStatsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${formatNumber(totals.streams)}</div>
+                    <div class="stat-label">Stream Sessions</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ffd700;">${formatNumber(totals.bits)}</div>
+                    <div class="stat-label">Total Bits</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #2ed573;">$${formatNumber(totals.revenue)}</div>
+                    <div class="stat-label">Total Revenue</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #00d2d3;">${formatNumber(totals.avgBits)}</div>
+                    <div class="stat-label">Avg Bits/Stream</div>
+                </div>
+            `;
+
+            const tbody = document.querySelector('#streamsTable tbody');
+            tbody.innerHTML = streamsData.slice().reverse().slice(0, 50).map(d => `
+                <tr class="stream-row">
+                    <td>${formatDate(d.date)}</td>
+                    <td>${formatNumber(d.subscribers)}</td>
+                    <td>${formatNumber(d.followers)}</td>
+                    <td>${formatNumber(d.bits_today)}</td>
+                    <td>$${formatNumber(d.subs_today_revenue)}</td>
+                    <td style="color: #00d2d3;">$${formatNumber((d.bits_today || 0) * 0.30)}</td>
+                </tr>
+            `).join('');
+
+            const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+            const dayStats = {};
+            dayNames.forEach((_, i) => dayStats[i] = { bits: 0, count: 0 });
+
+            streamsData.forEach(d => {
+                const dayIndex = new Date(d.date).getDay();
+                dayStats[dayIndex].bits += d.bits_today || 0;
+                dayStats[dayIndex].count++;
+            });
+
+            const dayNamesChart = document.getElementById('bestDaysChart').getContext('2d');
+            if (bestDaysChart) bestDaysChart.destroy();
+
+            bestDaysChart = new Chart(dayNamesChart, {
+                type: 'bar',
+                data: {
+                    labels: dayNames,
+                    datasets: [{
+                        label: 'Total Bits',
+                        data: dayNames.map((_, i) => dayStats[i].bits),
+                        backgroundColor: 'rgba(145, 70, 255, 0.7)',
+                        borderRadius: 5
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toLocaleString('en-US', { maximumFractionDigits: 2 });
+        }
+
+        function initTabs() {
+            document.querySelectorAll('.tab-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                    btn.classList.add('active');
+                    document.getElementById(btn.dataset.tab).classList.add('active');
+
+                    if (btn.dataset.tab === 'monthly') renderMonthlyView(currentMonthDate);
+                    if (btn.dataset.tab === 'weekly') renderWeeklyView(currentWeekStart);
+                    if (btn.dataset.tab === 'streams') renderStreamsView();
+                });
+            });
+
+            document.getElementById('prevMonth').addEventListener('click', () => {
+                currentMonthDate.setMonth(currentMonthDate.getMonth() - 1);
+                renderMonthlyView(currentMonthDate);
+            });
+
+            document.getElementById('nextMonth').addEventListener('click', () => {
+                currentMonthDate.setMonth(currentMonthDate.getMonth() + 1);
+                renderMonthlyView(currentMonthDate);
+            });
+
+            document.getElementById('prevWeek').addEventListener('click', () => {
+                currentWeekStart.setDate(currentWeekStart.getDate() - 7);
+                renderWeeklyView(currentWeekStart);
+            });
+
+            document.getElementById('nextWeek').addEventListener('click', () => {
+                currentWeekStart.setDate(currentWeekStart.getDate() + 7);
+                renderWeeklyView(currentWeekStart);
+            });
+        }
+
+        loadData();
+    </script>
+</body>
+</html>

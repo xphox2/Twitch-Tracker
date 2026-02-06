@@ -3,5 +3,5 @@
   "client_secret": "",
   "broadcaster_id": "",
   "access_token": "",
-  "poll_interval_seconds": 30
+  "poll_interval_seconds": 10
 }

@@ -192,6 +192,25 @@ function applyWidgetStyles() {
         root.style.setProperty(prefix + '-border-radius', config.border.radius + 'px');
         root.style.setProperty(prefix + '-padding', config.padding.vertical + 'px ' + config.padding.horizontal + 'px');
     });
+
+    // Compatibility: older templates use these generic variables.
+    // Map them to the per-widget config so branding still has effect.
+    try {
+        const f = WIDGET_CONFIG.widgets.followers;
+        const m = WIDGET_CONFIG.widgets.monthly;
+        const l = WIDGET_CONFIG.widgets.lifetime;
+        if (f && f.colors) {
+            root.style.setProperty('--color-primary', f.colors.text);
+            root.style.setProperty('--color-label', f.colors.label);
+            root.style.setProperty('--bg-color', f.background && f.background.enabled ? (root.style.getPropertyValue('--widget-followers-bg-color') || f.colors.background || 'transparent') : 'transparent');
+            root.style.setProperty('--border-width', (f.border && f.border.width !== undefined ? f.border.width : 0) + 'px');
+            root.style.setProperty('--border-style', (f.border && f.border.style) ? f.border.style : 'solid');
+            root.style.setProperty('--border-radius', (f.border && f.border.radius !== undefined ? f.border.radius : 0) + 'px');
+            root.style.setProperty('--padding', (f.padding ? (f.padding.vertical + 'px ' + f.padding.horizontal + 'px') : '0'));
+        }
+        if (m && m.colors) root.style.setProperty('--color-monthly', m.colors.text);
+        if (l && l.colors) root.style.setProperty('--color-lifetime', l.colors.text);
+    } catch (e) {}
 }
 
 document.addEventListener('DOMContentLoaded', applyWidgetStyles);

@@ -113,8 +113,8 @@
         ];
 
         const col2Stats = [
-            { label: 'Bits Today', key: 'bits_today' },
-            { label: 'Bits Total', key: 'bits_total' }
+            { label: 'Bits Today', key: 'bits_today', prefix: '$' },
+            { label: 'Bits Total', key: 'bits_total', prefix: '$' }
         ];
 
         const col3Stats = [
@@ -130,7 +130,7 @@
 
         async function updateStats() {
             try {
-                const response = await fetch('data/latest_stats.json');
+                const response = await fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' });
                 statsData = await response.json();
             } catch (e) {
                 console.log('Waiting for data...');

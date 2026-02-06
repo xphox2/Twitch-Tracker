@@ -18,6 +18,8 @@ import glob
 from urllib.parse import urlencode, urlparse
 from datetime import datetime, timedelta
 from pathlib import Path
+import socket
+import ssl
 
 CONFIG_FILE = "config.json"
 DATA_DIR = "data"
@@ -25,9 +27,16 @@ ARCHIVE_DIR = os.path.join(DATA_DIR, "archive", "daily")
 LATEST_FILE = os.path.join(DATA_DIR, "latest_stats.json")
 ARTIST_EARNINGS_FILE = os.path.join(DATA_DIR, "artist_earnings.json")
 DAILY_BITS_FILE = os.path.join(DATA_DIR, "daily_bits.json")
+BITS_TRACK_FILE = os.path.join(DATA_DIR, "bits_tracker.json")
 SUB_TIERS_FILE = os.path.join(DATA_DIR, "sub_tiers.json")
 SUBSCRIBERS_FILE = os.path.join(DATA_DIR, "subscribers.json")
 ARCHIVE_RETENTION_DAYS = 365
+
+BITS_VALUE_USD_PER_BIT = 0.01
+
+# Background threads update bits + artist earnings; protect file updates.
+BITS_TRACK_LOCK = threading.Lock()
+ARTIST_EARNINGS_LOCK = threading.Lock()
 
 TIER_VALUES = {
     "1000": 2.50,
@@ -35,7 +44,10 @@ TIER_VALUES = {
     "3000": 24.99
 }
 
-SCOPES = ["bits:read", "channel:read:subscriptions", "moderation:read"]
+# Notes:
+# - Followers endpoint uses moderator:read:followers
+# - Bits are tracked via IRC (requires chat:read)
+SCOPES = ["channel:read:subscriptions", "moderator:read:followers", "chat:read"]
 
 def get_oauth_url(client_id, redirect_uri):
     params = {
@@ -76,10 +88,15 @@ def get_subscribers(client_id, oauth, broadcaster_id):
         "Client-ID": client_id,
         "Authorization": f"Bearer {oauth}"
     }
-    params = {"broadcaster_id": broadcaster_id}
+    # Default page size is 20; use the API's total field instead of len(data).
+    params = {"broadcaster_id": broadcaster_id, "first": 1}
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 200:
-        return len(response.json().get("data", []))
+        return int(response.json().get("total", 0) or 0)
+    elif response.status_code == 401:
+        print("ERROR: Twitch API token expired. Run --setup to re-authenticate.")
+    elif response.status_code == 429:
+        print("WARNING: Twitch API rate limit exceeded.")
     return 0
 
 def get_subscribers_list(client_id, oauth, broadcaster_id):
@@ -90,17 +107,31 @@ def get_subscribers_list(client_id, oauth, broadcaster_id):
     }
     params = {"broadcaster_id": broadcaster_id, "first": 100}
     subs = []
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
+    pagination = None
+
+    while True:
+        if pagination:
+            params["after"] = pagination
+
+        response = requests.get(url, headers=headers, params=params)
+        if response.status_code != 200:
+            break
+
         data = response.json().get("data", [])
         for sub in data:
             subs.append({
-                "id": sub.get("id"),
+                "user_id": sub.get("user_id"),
+                "user_login": sub.get("user_login"),
                 "user_name": sub.get("user_name"),
                 "tier": sub.get("tier"),
                 "is_gift": sub.get("is_gift", False),
                 "created_at": sub.get("created_at")
             })
+
+        pagination = response.json().get("pagination", {}).get("cursor")
+        if not pagination:
+            break
+
     return subs
 
 def get_sub_tiers(client_id, oauth, broadcaster_id):
@@ -120,47 +151,84 @@ def load_subscribers():
 
 def save_subscribers(data):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SUBSCRIBERS_FILE, 'w') as f:
+    tmp_path = SUBSCRIBERS_FILE + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp_path, SUBSCRIBERS_FILE)
 
 def sync_subscribers(current_subs):
     data = load_subscribers()
 
-    current_ids = {sub["id"] for sub in current_subs}
-    stored_ids = set(data["subs"].keys())
+    # Use user_id as the stable key (Helix returns user_id; not an object id).
+    current_ids = {str(sub.get("user_id")) for sub in current_subs if sub.get("user_id")}
+    subs_by_id = data.get("subs", {})
+    active_stored_ids = {
+        str(user_id)
+        for user_id, sub in subs_by_id.items()
+        if isinstance(sub, dict) and sub.get("status") == "active"
+    }
 
-    new_ids = current_ids - stored_ids
-    ended_ids = stored_ids - current_ids
+    new_ids = current_ids - active_stored_ids
+    ended_ids = active_stored_ids - current_ids
 
     timestamp = datetime.now().isoformat()
 
-    for sub in current_subs:
-        if sub["id"] in new_ids:
-            sub["status"] = "active"
-            sub["started_at"] = timestamp
-            sub["gifts_received"] = 0
-            data["subs"][sub["id"]] = sub
-            data["history"].append({
-                "type": "new",
-                "user_id": sub["id"],
-                "user_name": sub["user_name"],
-                "tier": sub["tier"],
-                "is_gift": sub["is_gift"],
-                "timestamp": timestamp
-            })
+    current_subs_by_id = {
+        str(sub.get("user_id")): sub
+        for sub in current_subs
+        if sub.get("user_id")
+    }
+
+    for user_id in new_ids:
+        sub = current_subs_by_id.get(user_id, {})
+        prev = subs_by_id.get(user_id, {}) if isinstance(subs_by_id.get(user_id, {}), dict) else {}
+
+        event_type = "new"
+        if prev.get("status") == "ended":
+            event_type = "resub"
+
+        merged = dict(prev)
+        merged.update(sub)
+        merged["status"] = "active"
+        merged["started_at"] = timestamp
+        merged.pop("ended_at", None)
+        merged.setdefault("gifts_received", 0)
+        subs_by_id[user_id] = merged
+
+        data.setdefault("history", []).append({
+            "type": event_type,
+            "user_id": user_id,
+            "user_name": merged.get("user_name"),
+            "tier": merged.get("tier"),
+            "is_gift": bool(merged.get("is_gift", False)),
+            "timestamp": timestamp
+        })
 
     for user_id in ended_ids:
-        if user_id in data["subs"]:
-            data["subs"][user_id]["status"] = "ended"
-            data["subs"][user_id]["ended_at"] = timestamp
-            data["history"].append({
-                "type": "ended",
-                "user_id": user_id,
-                "user_name": data["subs"][user_id].get("user_name"),
-                "timestamp": timestamp
-            })
+        if user_id in subs_by_id and isinstance(subs_by_id[user_id], dict):
+            if subs_by_id[user_id].get("status") != "ended":
+                subs_by_id[user_id]["status"] = "ended"
+                subs_by_id[user_id]["ended_at"] = timestamp
+                data.setdefault("history", []).append({
+                    "type": "ended",
+                    "user_id": user_id,
+                    "user_name": subs_by_id[user_id].get("user_name"),
+                    "timestamp": timestamp
+                })
+
+    data["subs"] = subs_by_id
 
     save_subscribers(data)
+
+    if len(new_ids) > 0:
+        print(f"  + {len(new_ids)} new subscriber(s) detected")
+        for user_id in sorted(new_ids):
+            sub = current_subs_by_id.get(user_id, {})
+            tier = sub.get("tier", "unknown")
+            print(f"    - {sub.get('user_name', 'Unknown')}: Tier {tier}, Gift: {sub.get('is_gift', False)}")
+
+    if len(ended_ids) > 0:
+        print(f"  - {len(ended_ids)} subscriber(s) ended")
 
     return {
         "total": len(current_subs),
@@ -172,12 +240,29 @@ def load_sub_tiers():
     if os.path.exists(SUB_TIERS_FILE):
         with open(SUB_TIERS_FILE, 'r') as f:
             return json.load(f)
-    return {"total_bits": 0, "total_subs_revenue": 0, "tiers": {"1000": 0, "2000": 0, "3000": 0}}
+    return {
+        "total_subs_revenue": 0,
+        "gifted_subs_revenue": 0,
+        "nongift_subs_revenue": 0,
+        "tiers": {"1000": 0, "2000": 0, "3000": 0},
+        "gifted_tiers": {"1000": 0, "2000": 0, "3000": 0}
+    }
 
 def save_sub_tiers(data):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SUB_TIERS_FILE, 'w') as f:
+    tmp_path = SUB_TIERS_FILE + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp_path, SUB_TIERS_FILE)
+
+def count_gifted_subs(subs):
+    gifted = {"1000": 0, "2000": 0, "3000": 0}
+    for sub in subs:
+        if sub.get("is_gift", False):
+            tier = sub.get("tier", "")
+            if tier in gifted:
+                gifted[tier] += 1
+    return gifted
 
 def get_followers(client_id, oauth, broadcaster_id):
     url = "https://api.twitch.tv/helix/channels/followers"
@@ -189,21 +274,168 @@ def get_followers(client_id, oauth, broadcaster_id):
     response = requests.get(url, headers=headers, params=params)
     if response.status_code == 200:
         return response.json().get("total", 0)
+    elif response.status_code == 401:
+        print("ERROR: Missing scope for followers (moderator:read:followers) or token invalid. Re-run --setup.")
+    elif response.status_code == 429:
+        print("WARNING: Twitch API rate limit exceeded (followers).")
     return 0
 
-def get_bits(client_id, oauth, broadcaster_id):
-    url = "https://api.twitch.tv/helix/bits/leaderboard"
-    headers = {
-        "Client-ID": client_id,
-        "Authorization": f"Bearer {oauth}"
-    }
-    params = {"user_id": broadcaster_id, "count": 1}
-    response = requests.get(url, headers=headers, params=params)
-    if response.status_code == 200:
-        data = response.json().get("data", [])
-        if data:
-            return data[0].get("score", 0)
-    return 0
+def load_bits_tracker():
+    with BITS_TRACK_LOCK:
+        if os.path.exists(BITS_TRACK_FILE):
+            try:
+                with open(BITS_TRACK_FILE, 'r') as f:
+                    data = json.load(f)
+            except Exception:
+                data = {}
+        else:
+            data = {}
+
+        # Backwards compatibility: older versions only stored lifetime_bits_revenue.
+        if "lifetime_bits_revenue_tracked" not in data and "lifetime_bits_revenue" in data:
+            data["lifetime_bits_revenue_tracked"] = float(data.get("lifetime_bits_revenue", 0.0) or 0.0)
+            data["lifetime_bits_revenue_imported"] = float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0)
+            data["lifetime_bits_revenue"] = round(
+                float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+                + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+                2,
+            )
+
+        today = get_current_date_key()
+        if data.get("date") != today:
+            data["date"] = today
+            data["today_bits_count"] = 0
+            data["today_bits_revenue"] = 0.0
+
+        data.setdefault("lifetime_bits_count", 0)
+        data.setdefault("lifetime_bits_revenue_tracked", 0.0)
+        data.setdefault("lifetime_bits_revenue_imported", 0.0)
+        data["lifetime_bits_revenue"] = round(
+            float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+            + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+            2,
+        )
+        return data
+
+def save_bits_tracker(data):
+    with BITS_TRACK_LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp_path = BITS_TRACK_FILE + ".tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, BITS_TRACK_FILE)
+
+def record_cheer(bits_count):
+    try:
+        bits_count = int(bits_count)
+    except Exception:
+        return
+    if bits_count <= 0:
+        return
+
+    revenue = bits_count * BITS_VALUE_USD_PER_BIT
+
+    data = load_bits_tracker()
+    data["today_bits_count"] = int(data.get("today_bits_count", 0) or 0) + bits_count
+    data["today_bits_revenue"] = round(float(data.get("today_bits_revenue", 0.0) or 0.0) + revenue, 2)
+    data["lifetime_bits_count"] = int(data.get("lifetime_bits_count", 0) or 0) + bits_count
+    data["lifetime_bits_revenue_tracked"] = round(float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0) + revenue, 2)
+    data["lifetime_bits_revenue"] = round(
+        float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+        + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+        2,
+    )
+    save_bits_tracker(data)
+
+    # Update the artist fund in real-time for bits revenue.
+    try:
+        update_artist_earnings(revenue * 0.30, 0.0, 0.0)
+    except Exception:
+        pass
+
+    if bits_count == 1:
+        bits_label = "1 bit"
+    else:
+        bits_label = f"{bits_count} bits"
+    print(f"  + Cheer detected: {bits_label} (${revenue:.2f})")
+
+def _parse_irc_tags(tag_str):
+    tags = {}
+    for part in tag_str.split(';'):
+        if '=' in part:
+            k, v = part.split('=', 1)
+            tags[k] = v
+        else:
+            tags[part] = ""
+    return tags
+
+def start_bits_irc_listener(config):
+    """Background listener that tracks cheers (bits) via Twitch IRC."""
+    token = (config or {}).get("access_token")
+    username = (config or {}).get("username")
+    channel = (config or {}).get("channel") or username
+    if not token or not username or not channel:
+        print("WARNING: IRC bits tracker disabled (missing username/channel/token in config).")
+        return
+
+    def run():
+        server = "irc.chat.twitch.tv"
+        port = 6697
+        while True:
+            s = None
+            try:
+                raw = socket.create_connection((server, port), timeout=15)
+                ctx = ssl.create_default_context()
+                s = ctx.wrap_socket(raw, server_hostname=server)
+                s.settimeout(60)
+
+                sock = s
+
+                def send(line):
+                    sock.sendall((line + "\r\n").encode("utf-8"))
+
+                send("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership")
+                send(f"PASS oauth:{token}")
+                send(f"NICK {username}")
+                send(f"JOIN #{channel.lower()}")
+
+                print(f"IRC bits tracker connected: #{channel.lower()}")
+
+                buf = b""
+                while True:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        raise ConnectionError("IRC connection closed")
+                    buf += chunk
+                    while b"\r\n" in buf:
+                        line, buf = buf.split(b"\r\n", 1)
+                        try:
+                            msg = line.decode("utf-8", errors="ignore")
+                        except Exception:
+                            continue
+
+                        if msg.startswith("PING"):
+                            send("PONG :tmi.twitch.tv")
+                            continue
+
+                        if msg.startswith("@"):
+                            tag_part, rest = msg.split(" ", 1)
+                            tags = _parse_irc_tags(tag_part[1:])
+                            bits = tags.get("bits")
+                            if bits:
+                                record_cheer(bits)
+            except Exception as e:
+                print(f"WARNING: IRC bits tracker error: {e}. Reconnecting...")
+                time.sleep(5)
+            finally:
+                try:
+                    if s:
+                        s.close()
+                except Exception:
+                    pass
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
 
 def calculate_earnings(bits, donations):
     total_revenue = bits + donations
@@ -215,12 +447,14 @@ def load_artist_earnings():
     if os.path.exists(ARTIST_EARNINGS_FILE):
         with open(ARTIST_EARNINGS_FILE, 'r') as f:
             return json.load(f)
-    return {"monthly_bits": {}, "monthly_subs": {}, "lifetime_bits": 0, "lifetime_subs": 0, "lifetime_total": 0}
+    return {"monthly_bits": {}, "monthly_subs": {}, "monthly_gifted": {}, "lifetime_bits": 0, "lifetime_subs": 0, "lifetime_gifted": 0, "lifetime_total": 0}
 
 def save_artist_earnings(data):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ARTIST_EARNINGS_FILE, 'w') as f:
+    tmp_path = ARTIST_EARNINGS_FILE + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp_path, ARTIST_EARNINGS_FILE)
 
 def load_daily_bits():
     if os.path.exists(DAILY_BITS_FILE):
@@ -291,42 +525,70 @@ def update_daily_bits(current_bits):
     save_daily_bits(data)
     return data["bits"], daily_increment
 
-def update_artist_earnings(daily_artist_bits, daily_artist_subs):
-    data = load_artist_earnings()
-    current_month = get_current_month_key()
+def update_artist_earnings(daily_artist_bits, daily_artist_subs, daily_artist_gifted=0.0):
+    with ARTIST_EARNINGS_LOCK:
+        data = load_artist_earnings()
+        current_month = get_current_month_key()
 
-    last_monthly_bits = data["monthly_bits"].get(current_month, 0)
-    last_monthly_subs = data["monthly_subs"].get(current_month, 0)
+        last_monthly_bits = data["monthly_bits"].get(current_month, 0)
+        last_monthly_subs = data["monthly_subs"].get(current_month, 0)
+        last_monthly_gifted = data["monthly_gifted"].get(current_month, 0) if "monthly_gifted" in data else 0
 
-    new_monthly_bits = last_monthly_bits + daily_artist_bits
-    new_monthly_subs = last_monthly_subs + daily_artist_subs
+        new_monthly_bits = last_monthly_bits + daily_artist_bits
+        new_monthly_subs = last_monthly_subs + daily_artist_subs
+        new_monthly_gifted = last_monthly_gifted + daily_artist_gifted
 
-    data["monthly_bits"][current_month] = round(new_monthly_bits, 2)
-    data["monthly_subs"][current_month] = round(new_monthly_subs, 2)
+        if "monthly_gifted" not in data:
+            data["monthly_gifted"] = {}
 
-    lifetime_bits = data["lifetime_bits"] + daily_artist_bits
-    lifetime_subs = data["lifetime_subs"] + daily_artist_subs
-    lifetime_total = lifetime_bits + lifetime_subs
+        data["monthly_bits"][current_month] = round(new_monthly_bits, 2)
+        data["monthly_subs"][current_month] = round(new_monthly_subs, 2)
+        data["monthly_gifted"][current_month] = round(new_monthly_gifted, 2)
 
-    data["lifetime_bits"] = round(lifetime_bits, 2)
-    data["lifetime_subs"] = round(lifetime_subs, 2)
-    data["lifetime_total"] = round(lifetime_total, 2)
+        lifetime_bits = data["lifetime_bits"] + daily_artist_bits
+        lifetime_subs = data["lifetime_subs"] + daily_artist_subs
+        lifetime_gifted = data.get("lifetime_gifted", 0) + daily_artist_gifted
+        lifetime_total = lifetime_bits + lifetime_subs + lifetime_gifted
 
-    save_artist_earnings(data)
-    return new_monthly_bits, new_monthly_subs, data["lifetime_total"]
+        data["lifetime_bits"] = round(lifetime_bits, 2)
+        data["lifetime_subs"] = round(lifetime_subs, 2)
+        data["lifetime_gifted"] = round(lifetime_gifted, 2)
+        data["lifetime_total"] = round(lifetime_total, 2)
 
-def update_totals(current_bits, current_tiers, lifetime_bits, lifetime_subs):
+        save_artist_earnings(data)
+        return new_monthly_bits, new_monthly_subs, new_monthly_gifted, data["lifetime_total"]
+
+def update_totals(current_tiers, gifted_tiers):
     sub_data = load_sub_tiers()
-    daily_bits_increment = max(0, current_bits - sub_data["total_bits"])
-    sub_data["total_bits"] = current_bits
+    total_subs_revenue = sum(count * TIER_VALUES.get(tier, 0) for tier, count in current_tiers.items())
+    gifted_subs_revenue = sum(count * TIER_VALUES.get(tier, 0) for tier, count in gifted_tiers.items())
+    nongift_subs_revenue = max(0.0, total_subs_revenue - gifted_subs_revenue)
 
-    total_subs_revenue = sum(count * TIER_VALUES[tier] for tier, count in current_tiers.items())
-    daily_subs_increment = max(0, total_subs_revenue - sub_data.get("total_subs_revenue", 0))
-    sub_data["total_subs_revenue"] = total_subs_revenue
+    # Backwards-compatible migration: if the new revenue buckets aren't present,
+    # seed them from current values and don't treat this as "new" revenue.
+    if "gifted_subs_revenue" not in sub_data or "nongift_subs_revenue" not in sub_data:
+        sub_data["gifted_subs_revenue"] = round(float(gifted_subs_revenue), 2)
+        sub_data["nongift_subs_revenue"] = round(float(nongift_subs_revenue), 2)
+        sub_data["total_subs_revenue"] = round(float(total_subs_revenue), 2)
+        sub_data["tiers"] = current_tiers
+        sub_data["gifted_tiers"] = gifted_tiers
+        save_sub_tiers(sub_data)
+        return 0.0, 0.0
+
+    prev_gifted = float(sub_data.get("gifted_subs_revenue", 0) or 0)
+    prev_nongift = float(sub_data.get("nongift_subs_revenue", 0) or 0)
+
+    daily_gifted_increment = max(0.0, gifted_subs_revenue - prev_gifted)
+    daily_nongift_increment = max(0.0, nongift_subs_revenue - prev_nongift)
+
+    sub_data["total_subs_revenue"] = round(float(total_subs_revenue), 2)
+    sub_data["gifted_subs_revenue"] = round(float(gifted_subs_revenue), 2)
+    sub_data["nongift_subs_revenue"] = round(float(nongift_subs_revenue), 2)
     sub_data["tiers"] = current_tiers
+    sub_data["gifted_tiers"] = gifted_tiers
     save_sub_tiers(sub_data)
 
-    return daily_bits_increment, daily_subs_increment
+    return daily_nongift_increment, daily_gifted_increment
 
 def fetch_all_stats(config):
     client_id = config["client_id"]
@@ -334,13 +596,29 @@ def fetch_all_stats(config):
 
     token = config.get("access_token")
     if not token:
-        print("No access token. Run setup again: python twitch_stats.py --setup")
+        print("ERROR: No access token. Run setup again: python twitch_stats.py --setup")
         return None
 
-    subscribers = get_subscribers(client_id, token, broadcaster_id)
-    followers = get_followers(client_id, token, broadcaster_id)
-    current_bits = get_bits(client_id, token, broadcaster_id)
-    current_tiers, current_subs = get_sub_tiers(client_id, token, broadcaster_id)
+    try:
+        subscribers = get_subscribers(client_id, token, broadcaster_id)
+    except Exception as e:
+        print(f"ERROR fetching subscribers: {e}")
+        subscribers = 0
+
+    try:
+        followers = get_followers(client_id, token, broadcaster_id)
+    except Exception as e:
+        print(f"ERROR fetching followers: {e}")
+        followers = 0
+
+    try:
+        current_tiers, current_subs = get_sub_tiers(client_id, token, broadcaster_id)
+        gifted_tiers = count_gifted_subs(current_subs)
+    except Exception as e:
+        print(f"ERROR fetching sub tiers: {e}")
+        current_tiers = {"1000": 0, "2000": 0, "3000": 0}
+        current_subs = []
+        gifted_tiers = {"1000": 0, "2000": 0, "3000": 0}
 
     sync_subscribers(current_subs)
 
@@ -355,34 +633,39 @@ def fetch_all_stats(config):
         if sub_data.get("tiers"):
             current_tiers = sub_data["tiers"]
 
-    daily_bits, daily_increment = update_daily_bits(current_bits)
+    bits_data = load_bits_tracker()
+    bits_today_revenue = float(bits_data.get("today_bits_revenue", 0.0) or 0.0)
+    bits_total_revenue = float(bits_data.get("lifetime_bits_revenue", 0.0) or 0.0)
 
     total_subs_revenue = sum(count * TIER_VALUES[tier] for tier, count in current_tiers.items())
 
     if total_subs_revenue == 0 and sub_data.get("total_subs_revenue", 0) > 0:
         total_subs_revenue = sub_data["total_subs_revenue"]
 
-    daily_bits_increment, daily_subs_increment = update_totals(current_bits, current_tiers, 0, 0)
+    daily_nongift_increment, daily_gifted_increment = update_totals(current_tiers, gifted_tiers)
 
-    daily_artist_bits = daily_bits_increment * 0.30
-    daily_artist_subs = daily_subs_increment * 0.30
+    daily_artist_subs = daily_nongift_increment * 0.30
+    daily_artist_gifted = daily_gifted_increment * 0.30
 
-    monthly_artist_bits, monthly_artist_subs, lifetime_total = update_artist_earnings(daily_artist_bits, daily_artist_subs)
+    # Bits are tracked via IRC in record_cheer() (real-time). Only apply subs/gifted deltas here.
+    monthly_artist_bits, monthly_artist_subs, monthly_artist_gifted, lifetime_total = update_artist_earnings(0.0, daily_artist_subs, daily_artist_gifted)
 
     return {
         "timestamp": datetime.now().isoformat(),
         "subscribers": subscribers,
         "followers": followers,
-        "bits_today": daily_bits,
-        "bits_total": current_bits,
-        "subs_today_revenue": round(daily_subs_increment, 2),
+        "bits_today": round(bits_today_revenue, 2),
+        "bits_total": round(bits_total_revenue, 2),
+        "subs_today_revenue": round(daily_nongift_increment + daily_gifted_increment, 2),
         "subs_total_revenue": round(total_subs_revenue, 2),
         "artist_bits_monthly": round(monthly_artist_bits, 2),
         "artist_subs_monthly": round(monthly_artist_subs, 2),
-        "artist_raise_30": round(monthly_artist_bits + monthly_artist_subs, 2),
+        "artist_gifted_monthly": round(monthly_artist_gifted, 2),
+        "artist_raise_30": round(monthly_artist_bits + monthly_artist_subs + monthly_artist_gifted, 2),
         "artist_yearly": round(lifetime_total, 2),
-        "total_revenue": round(current_bits + total_subs_revenue, 2),
-        "tiers": current_tiers
+        "total_revenue": round(bits_total_revenue + total_subs_revenue, 2),
+        "tiers": current_tiers,
+        "gifted_tiers": gifted_tiers
     }
 
 def save_to_archive(stats):
@@ -398,8 +681,10 @@ def save_to_archive(stats):
 
 def save_latest(stats):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(LATEST_FILE, 'w') as f:
+    tmp_path = LATEST_FILE + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(stats, f, indent=2)
+    os.replace(tmp_path, LATEST_FILE)
 
 def setup_config():
     print("Twitch Stats Tracker Setup")
@@ -430,6 +715,9 @@ def setup_config():
         "client_secret": client_secret,
         "broadcaster_id": broadcaster_id,
         "access_token": access_token,
+        "username": username,
+        "channel": username,
+        "enable_irc_bits": True,
         "poll_interval_seconds": 60
     }
     save_config(config)
@@ -454,25 +742,52 @@ def set_initial_totals():
 
     total_subs_revenue = (tier1 * 2.50) + (tier2 * 5.00) + (tier3 * 24.99)
 
+    print()
+    print("Optional: enter your lifetime Bits *revenue* in USD (from Twitch analytics)")
+    print("If you don't know it yet, leave blank to start from $0.00.")
+    bits_lifetime_input = input("  Lifetime Bits Revenue ($): ").strip()
+    try:
+        lifetime_bits_revenue = float(bits_lifetime_input.replace('$', '').replace(',', '')) if bits_lifetime_input else 0.0
+    except Exception:
+        lifetime_bits_revenue = 0.0
+
     sub_data = {
-        "total_bits": 0,
         "total_subs_revenue": total_subs_revenue,
+        "gifted_subs_revenue": 0,
+        "nongift_subs_revenue": total_subs_revenue,
         "tiers": {
             "1000": tier1,
             "2000": tier2,
             "3000": tier3
-        }
+        },
+        "gifted_tiers": {"1000": 0, "2000": 0, "3000": 0}
     }
     save_sub_tiers(sub_data)
+
+    bits_data = load_bits_tracker()
+    bits_data["lifetime_bits_count"] = int(bits_data.get("lifetime_bits_count", 0) or 0)
+    # Treat this as imported lifetime bits revenue (historical seed).
+    bits_data["lifetime_bits_revenue_imported"] = round(float(lifetime_bits_revenue), 2)
+    bits_data["today_bits_count"] = 0
+    bits_data["today_bits_revenue"] = 0.0
+    bits_data["date"] = get_current_date_key()
+    bits_data["lifetime_bits_revenue"] = round(
+        float(bits_data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+        + float(bits_data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+        2,
+    )
+    save_bits_tracker(bits_data)
 
     artist_subs_lifetime = total_subs_revenue * 0.30
 
     earnings_data = {
         "monthly_bits": {},
         "monthly_subs": {},
-        "lifetime_bits": 0,
+        "monthly_gifted": {},
+        "lifetime_bits": round(lifetime_bits_revenue * 0.30, 2),
         "lifetime_subs": round(artist_subs_lifetime, 2),
-        "lifetime_total": round(artist_subs_lifetime, 2)
+        "lifetime_gifted": 0,
+        "lifetime_total": round((lifetime_bits_revenue * 0.30) + artist_subs_lifetime, 2)
     }
     save_artist_earnings(earnings_data)
 
@@ -499,6 +814,7 @@ def import_csv_history(folder):
 
     earnings_data = load_artist_earnings()
     sub_data = load_sub_tiers()
+    imported_bits_revenue_total = 0.0
 
     for csv_file in sorted(csv_files):
         filename = os.path.basename(csv_file)
@@ -525,6 +841,9 @@ def import_csv_history(folder):
                             bits = float(bits_col.replace('$', '').replace(',', ''))
                         except:
                             pass
+
+                    if bits > 0:
+                        imported_bits_revenue_total += bits
 
                     tier1 = tier2 = tier3 = 0
                     tier1_col = row.get('Tier 1 subs', '').strip()
@@ -590,11 +909,25 @@ def import_csv_history(folder):
 
     save_artist_earnings(earnings_data)
 
+    # Seed bits lifetime totals from imported CSV revenue.
+    try:
+        bits_data = load_bits_tracker()
+        bits_data["lifetime_bits_revenue_imported"] = round(float(imported_bits_revenue_total), 2)
+        bits_data["lifetime_bits_revenue"] = round(
+            float(bits_data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+            + float(bits_data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+            2,
+        )
+        save_bits_tracker(bits_data)
+    except Exception as e:
+        print(f"WARNING: Failed to seed bits totals from CSV import: {e}")
+
     print(f"\n" + "=" * 40)
     print("Import complete!")
-    print(f"  Lifetime Bits Revenue: ${lifetime_bits:,.2f}")
-    print(f"  Lifetime Subs Revenue: ${lifetime_subs:,.2f}")
+    print(f"  Artist Bits (30%) Lifetime: ${lifetime_bits:,.2f}")
+    print(f"  Artist Subs (30%) Lifetime: ${lifetime_subs:,.2f}")
     print(f"  Artist Lifetime (30%): ${earnings_data['lifetime_total']:,.2f}")
+    print(f"  Bits Revenue Imported (100%): ${imported_bits_revenue_total:,.2f}")
     print(f"\nRun 'python twitch_stats.py' to start tracking")
 
 class StatsHandler(http.server.SimpleHTTPRequestHandler):
@@ -896,12 +1229,21 @@ if __name__ == "__main__":
                 print("\nPlace CSV files in the folder and run this command.")
                 sys.exit(1)
             import_csv_history(sys.argv[2])
+        elif sys.argv[1] == "--simulate-cheer":
+            if len(sys.argv) < 3:
+                print("Usage: python twitch_stats.py --simulate-cheer <bits>")
+                sys.exit(1)
+            bits = sys.argv[2]
+            record_cheer(bits)
+            bits_data = load_bits_tracker()
+            print(f"Bits Totals: ${bits_data.get('today_bits_revenue', 0.0):.2f} today, ${bits_data.get('lifetime_bits_revenue', 0.0):.2f} lifetime")
         else:
             print("Usage: python twitch_stats.py [--setup] [--server <port>] [--set-totals] [--import-csvs <folder>]")
             print("\nExamples:")
             print("  python twitch_stats.py              # Start tracker with built-in web server")
             print("  python twitch_stats.py --server     # Web server only (no Twitch API)")
             print("  python twitch_stats.py --setup      # Configure Twitch API credentials")
+            print("  python twitch_stats.py --simulate-cheer 100  # Local test: add $1.00 bits revenue")
         sys.exit(0)
 
     config = load_config()
@@ -924,6 +1266,9 @@ if __name__ == "__main__":
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
 
+    if config.get("enable_irc_bits", True):
+        start_bits_irc_listener(config)
+
     try:
         while True:
             stats = fetch_all_stats(config)
@@ -931,10 +1276,15 @@ if __name__ == "__main__":
                 save_to_archive(stats)
                 save_latest(stats)
                 timestamp = stats["timestamp"][:19]
+                gifted_revenue = (stats.get('gifted_tiers', {}).get('1000', 0) * 2.50 +
+                                 stats.get('gifted_tiers', {}).get('2000', 0) * 5.00 +
+                                 stats.get('gifted_tiers', {}).get('3000', 0) * 24.99)
                 print(f"[{timestamp}] Subs: {stats['subscribers']} | Followers: {stats['followers']} | "
-                      f"Bits: {stats['bits_today']} today, {stats['bits_total']} total | "
-                      f"Subs Revenue: ${stats['subs_today_revenue']:.2f} today, ${stats['subs_total_revenue']:.2f} total | "
-                      f"Artist: ${stats['artist_raise_30']:.2f} mo, ${stats['artist_yearly']:.2f} life")
+                      f"Bits: ${stats['bits_today']:.2f} today, ${stats['bits_total']:.2f} total | "
+                      f"Subs: {stats['subs_today_revenue']:.2f} today, {stats['subs_total_revenue']:.2f} total | "
+                      f"Tiers: T1={stats['tiers'].get('1000', 0)} T2={stats['tiers'].get('2000', 0)} T3={stats['tiers'].get('3000', 0)} | "
+                      f"Gifted: {stats.get('gifted_tiers', {}).get('1000', 0)}/{stats.get('gifted_tiers', {}).get('2000', 0)}/{stats.get('gifted_tiers', {}).get('3000', 0)} | "
+                      f"Artist: ${stats['artist_raise_30']:.2f} mo")
             else:
                 print(f"[{datetime.now().isoformat()[:19]}] Failed to fetch stats")
             time.sleep(config["poll_interval_seconds"])

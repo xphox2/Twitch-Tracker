@@ -69,11 +69,12 @@
     <script>
         async function updateStats() {
             try {
-                const earningsRes = await fetch('data/artist_earnings.json');
+                const earningsRes = await fetch('data/artist_earnings.json?t=' + Date.now(), { cache: 'no-store' });
                 const earnings = await earningsRes.json();
                 const monthly = earnings.monthly_bits?.[new Date().toISOString().slice(0, 7)] || 0;
                 const monthlySubs = earnings.monthly_subs?.[new Date().toISOString().slice(0, 7)] || 0;
-                document.getElementById('artist-monthly').textContent = '$' + (monthly + monthlySubs).toFixed(2);
+                const monthlyGifted = earnings.monthly_gifted?.[new Date().toISOString().slice(0, 7)] || 0;
+                document.getElementById('artist-monthly').textContent = '$' + (monthly + monthlySubs + monthlyGifted).toFixed(2);
             } catch (e) {}
         }
         updateStats();
