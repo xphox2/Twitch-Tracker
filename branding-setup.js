@@ -85,6 +85,56 @@ const DEFAULT_CONFIG = {
                 horizontal: 15
             }
         }
+        ,
+        bits: {
+            fontSize: 42,
+            labelFontSize: 14,
+            colors: {
+                text: "#2ed573",
+                label: "#aaaaaa",
+                border: "#2ed573",
+                background: "rgba(0,0,0,0.3)"
+            },
+            border: {
+                width: 2,
+                style: "solid",
+                radius: 0
+            },
+            background: {
+                enabled: false,
+                color: "rgba(0,0,0,0.3)",
+                opacity: 30
+            },
+            padding: {
+                vertical: 8,
+                horizontal: 15
+            }
+        }
+        ,
+        subgoal: {
+            fontSize: 42,
+            labelFontSize: 14,
+            colors: {
+                text: "#00d2d3",
+                label: "#aaaaaa",
+                border: "#00d2d3",
+                background: "rgba(0,0,0,0.3)"
+            },
+            border: {
+                width: 2,
+                style: "solid",
+                radius: 0
+            },
+            background: {
+                enabled: false,
+                color: "rgba(0,0,0,0.3)",
+                opacity: 30
+            },
+            padding: {
+                vertical: 8,
+                horizontal: 15
+            }
+        }
     }
 };
 
@@ -153,7 +203,7 @@ function applyWidgetStyles() {
     root.style.setProperty('--text-shadow', WIDGET_CONFIG.textShadow);
     root.style.setProperty('--gap', WIDGET_CONFIG.layout.gap + 'px');
     
-    const widgets = ['followers', 'monthly', 'lifetime'];
+    const widgets = ['followers', 'subgoal', 'bits', 'monthly', 'lifetime'];
     
     widgets.forEach(widget => {
         const config = WIDGET_CONFIG.widgets[widget];

@@ -620,6 +620,50 @@
         let allData = [];
         let yearlyRevenueChart, yearlyTiersChart, monthlyChart, weeklyChart, streamBitsChart, bestDaysChart;
 
+        function parseCsvLine(line) {
+            // Basic CSV parser: handles quoted fields with commas.
+            const out = [];
+            let cur = '';
+            let inQuotes = false;
+            for (let i = 0; i < line.length; i++) {
+                const ch = line[i];
+                if (ch === '"') {
+                    if (inQuotes && line[i + 1] === '"') {
+                        cur += '"';
+                        i++;
+                    } else {
+                        inQuotes = !inQuotes;
+                    }
+                    continue;
+                }
+                if (ch === ',' && !inQuotes) {
+                    out.push(cur);
+                    cur = '';
+                    continue;
+                }
+                cur += ch;
+            }
+            out.push(cur);
+            return out;
+        }
+
+        function parsePythonDictString(s) {
+            // Archive stores tiers as a Python-ish dict string. Convert best-effort.
+            if (!s) return null;
+            const text = String(s).trim();
+            if (!text.startsWith('{') || !text.endsWith('}')) return null;
+            try {
+                const jsonish = text
+                    .replace(/'/g, '"')
+                    .replace(/\bNone\b/g, 'null')
+                    .replace(/\bTrue\b/g, 'true')
+                    .replace(/\bFalse\b/g, 'false');
+                return JSON.parse(jsonish);
+            } catch (e) {
+                return null;
+            }
+        }
+
         async function loadData() {
             try {
                 const response = await fetch('/data/archive/daily/');
@@ -639,15 +683,17 @@
                             if (!isNaN(fileDate.getTime())) {
                                 const fileResponse = await fetch('/data/archive/daily/' + href);
                                 const csvText = await fileResponse.text();
-                                const rows = csvText.split('\n').slice(1).filter(row => row.trim());
-                                if (rows.length > 0) {
-                                    const headers = rows[0].split(',');
-                                    const values = rows[rows.length - 1].split(',');
+                                const lines = csvText.split(/\r?\n/).filter(row => row.trim());
+                                if (lines.length > 1) {
+                                    const headers = parseCsvLine(lines[0]).map(h => h.trim());
+                                    const values = parseCsvLine(lines[lines.length - 1]);
                                     const stats = {};
                                     headers.forEach((header, i) => {
                                         let value = values[i]?.trim() || '0';
                                         if (header === 'timestamp') {
                                             stats[header] = value;
+                                        } else if (header === 'tiers' || header === 'gifted_tiers') {
+                                            stats[header] = parsePythonDictString(value) || {};
                                         } else {
                                             stats[header] = parseFloat(value) || 0;
                                         }
@@ -769,13 +815,13 @@
                 totalFollowers = day.followers || totalFollowers;
                 totalSubscribers = day.subscribers || totalSubscribers;
 
-                if (day.tiers) {
+                if (day.tiers && typeof day.tiers === 'object') {
                     tiers['1000'] = day.tiers['1000'] || tiers['1000'];
                     tiers['2000'] = day.tiers['2000'] || tiers['2000'];
                     tiers['3000'] = day.tiers['3000'] || tiers['3000'];
                 }
 
-                if (day.gifted_tiers) {
+                if (day.gifted_tiers && typeof day.gifted_tiers === 'object') {
                     gifted_tiers['1000'] = day.gifted_tiers['1000'] || gifted_tiers['1000'];
                     gifted_tiers['2000'] = day.gifted_tiers['2000'] || gifted_tiers['2000'];
                     gifted_tiers['3000'] = day.gifted_tiers['3000'] || gifted_tiers['3000'];
@@ -897,7 +943,7 @@
                 monthlyData[month].bits += day.bits_today || 0;
                 monthlyData[month].revenue += day.subs_today_revenue || 0;
                 monthlyData[month].gifted += (day.gifted_tiers?.['1000'] || 0) * 2.50 + (day.gifted_tiers?.['2000'] || 0) * 5.00 + (day.gifted_tiers?.['3000'] || 0) * 24.99;
-                monthlyData[month].artist += (day.bits_today || 0) * 0.30 + monthlyData[month].gifted * 0.30;
+                monthlyData[month].artist += ((day.bits_today || 0) + (day.subs_today_revenue || 0)) * 0.30;
             });
 
             tbody.innerHTML = Object.entries(monthlyData)
@@ -1133,6 +1179,7 @@
         }
 
         function formatNumber(num) {
+            if (num == null || num === '') return '0';
             if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
             if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
             return num.toLocaleString('en-US', { maximumFractionDigits: 2 });

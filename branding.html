@@ -407,6 +407,40 @@
             font-size: var(--followers-label-size, 14px);
         }
 
+        .preview-widget.subgoal {
+            background: var(--subgoal-bg, rgba(0,0,0,0));
+            border-radius: var(--subgoal-radius, 0);
+            padding: var(--subgoal-padding, 8px 15px);
+            border: var(--subgoal-border-width, 2px) var(--subgoal-border-style, solid) var(--subgoal-border-color, #00d2d3);
+        }
+
+        .preview-widget.subgoal .preview-value {
+            color: var(--subgoal-text, #00d2d3);
+            font-size: var(--subgoal-size, 42px);
+        }
+
+        .preview-widget.subgoal .preview-label {
+            color: var(--subgoal-label, #aaaaaa);
+            font-size: var(--subgoal-label-size, 14px);
+        }
+
+        .preview-widget.bits {
+            background: var(--bits-bg, rgba(0,0,0,0));
+            border-radius: var(--bits-radius, 0);
+            padding: var(--bits-padding, 8px 15px);
+            border: var(--bits-border-width, 2px) var(--bits-border-style, solid) var(--bits-border-color, #2ed573);
+        }
+
+        .preview-widget.bits .preview-value {
+            color: var(--bits-text, #2ed573);
+            font-size: var(--bits-size, 42px);
+        }
+
+        .preview-widget.bits .preview-label {
+            color: var(--bits-label, #aaaaaa);
+            font-size: var(--bits-label-size, 14px);
+        }
+
         .preview-widget.monthly {
             background: var(--monthly-bg, rgba(0,0,0,0));
             border-radius: var(--monthly-radius, 0);
@@ -634,6 +668,182 @@
                     </div>
                 </div>
 
+                <!-- Subscriber Goal Widget -->
+                <div class="widget-section">
+                    <h3><span class="widget-color" style="background: #00d2d3;"></span> Subscriber Goal Widget</h3>
+
+                    <div class="control-row">
+                        <div class="control-group">
+                            <label>Text Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="subgoal-text-color-picker" value="#00d2d3">
+                                <input type="text" id="subgoal-text-color" value="#00d2d3">
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Label Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="subgoal-label-color-picker" value="#aaaaaa">
+                                <input type="text" id="subgoal-label-color" value="#aaaaaa">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="control-row">
+                        <div class="control-group">
+                            <label>Border Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="subgoal-border-color-picker" value="#00d2d3">
+                                <input type="text" id="subgoal-border-color" value="#00d2d3">
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Background</label>
+                            <div class="checkbox-wrapper">
+                                <input type="checkbox" id="subgoal-bg-enabled">
+                                <label for="subgoal-bg-enabled">Enable BG</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="control-group" id="subgoal-bg-color-group" style="display: none;">
+                        <label>Background Color</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="subgoal-bg-color-picker" value="#000000">
+                            <input type="text" id="subgoal-bg-color" value="rgba(0,0,0,0.3)">
+                        </div>
+                        <div class="control-group" style="margin-top: 10px;">
+                            <label>Background Opacity</label>
+                            <input type="range" id="subgoal-bg-opacity" min="0" max="100" value="30">
+                            <div class="range-value"><span id="subgoal-bg-opacity-display">30</span>%</div>
+                        </div>
+                    </div>
+
+                    <div class="control-row-3">
+                        <div class="control-group control-small">
+                            <label>Text Size</label>
+                            <input type="range" id="subgoal-font-size" min="20" max="150" value="42">
+                            <div class="range-value"><span id="subgoal-font-size-display">42</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Label Size</label>
+                            <input type="range" id="subgoal-label-font-size" min="10" max="60" value="14">
+                            <div class="range-value"><span id="subgoal-label-font-size-display">14</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Border</label>
+                            <input type="range" id="subgoal-border-width" min="0" max="10" value="2">
+                            <div class="range-value"><span id="subgoal-border-width-display">2</span>px</div>
+                        </div>
+                    </div>
+
+                    <div class="control-row-3">
+                        <div class="control-group control-small">
+                            <label>Radius</label>
+                            <input type="range" id="subgoal-border-radius" min="0" max="30" value="0">
+                            <div class="range-value"><span id="subgoal-border-radius-display">0</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Pad V</label>
+                            <input type="range" id="subgoal-padding-v" min="0" max="30" value="8">
+                            <div class="range-value"><span id="subgoal-padding-v-display">8</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Pad H</label>
+                            <input type="range" id="subgoal-padding-h" min="0" max="40" value="15">
+                            <div class="range-value"><span id="subgoal-padding-h-display">15</span>px</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bits Today Widget -->
+                <div class="widget-section">
+                    <h3><span class="widget-color" style="background: #2ed573;"></span> Bits Today Widget</h3>
+                    
+                    <div class="control-row">
+                        <div class="control-group">
+                            <label>Text Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="bits-text-color-picker" value="#2ed573">
+                                <input type="text" id="bits-text-color" value="#2ed573">
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Label Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="bits-label-color-picker" value="#aaaaaa">
+                                <input type="text" id="bits-label-color" value="#aaaaaa">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="control-row">
+                        <div class="control-group">
+                            <label>Border Color</label>
+                            <div class="color-input-wrapper">
+                                <input type="color" id="bits-border-color-picker" value="#2ed573">
+                                <input type="text" id="bits-border-color" value="#2ed573">
+                            </div>
+                        </div>
+                        <div class="control-group">
+                            <label>Background</label>
+                            <div class="checkbox-wrapper">
+                                <input type="checkbox" id="bits-bg-enabled">
+                                <label for="bits-bg-enabled">Enable BG</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="control-group" id="bits-bg-color-group" style="display: none;">
+                        <label>Background Color</label>
+                        <div class="color-input-wrapper">
+                            <input type="color" id="bits-bg-color-picker" value="#000000">
+                            <input type="text" id="bits-bg-color" value="rgba(0,0,0,0.3)">
+                        </div>
+                        <div class="control-group" style="margin-top: 10px;">
+                            <label>Background Opacity</label>
+                            <input type="range" id="bits-bg-opacity" min="0" max="100" value="30">
+                            <div class="range-value"><span id="bits-bg-opacity-display">30</span>%</div>
+                        </div>
+                    </div>
+
+                    <div class="control-row-3">
+                        <div class="control-group control-small">
+                            <label>Text Size</label>
+                            <input type="range" id="bits-font-size" min="20" max="150" value="42">
+                            <div class="range-value"><span id="bits-font-size-display">42</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Label Size</label>
+                            <input type="range" id="bits-label-font-size" min="10" max="60" value="14">
+                            <div class="range-value"><span id="bits-label-font-size-display">14</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Border</label>
+                            <input type="range" id="bits-border-width" min="0" max="10" value="2">
+                            <div class="range-value"><span id="bits-border-width-display">2</span>px</div>
+                        </div>
+                    </div>
+
+                    <div class="control-row-3">
+                        <div class="control-group control-small">
+                            <label>Radius</label>
+                            <input type="range" id="bits-border-radius" min="0" max="30" value="0">
+                            <div class="range-value"><span id="bits-border-radius-display">0</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Pad V</label>
+                            <input type="range" id="bits-padding-v" min="0" max="30" value="8">
+                            <div class="range-value"><span id="bits-padding-v-display">8</span>px</div>
+                        </div>
+                        <div class="control-group control-small">
+                            <label>Pad H</label>
+                            <input type="range" id="bits-padding-h" min="0" max="40" value="15">
+                            <div class="range-value"><span id="bits-padding-h-display">15</span>px</div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Monthly Widget -->
                 <div class="widget-section">
                     <h3><span class="widget-color" style="background: #ff6b6b;"></span> Monthly Artists Widget</h3>
@@ -829,6 +1039,14 @@
                             <div class="preview-label">Followers</div>
                             <div class="preview-value">1,234</div>
                         </div>
+                        <div class="preview-widget subgoal">
+                            <div class="preview-label">Subs Goal</div>
+                            <div class="preview-value">23 / 150</div>
+                        </div>
+                        <div class="preview-widget bits">
+                            <div class="preview-label">Bits Today</div>
+                            <div class="preview-value">$12.34</div>
+                        </div>
                         <div class="preview-widget monthly">
                             <div class="preview-label">Artists (Monthly)</div>
                             <div class="preview-value">$45</div>
@@ -868,6 +1086,54 @@
                         text: "#9146ff",
                         label: "#aaaaaa",
                         border: "#9146ff",
+                        background: "rgba(0,0,0,0.3)"
+                    },
+                    border: {
+                        width: 2,
+                        style: "solid",
+                        radius: 0
+                    },
+                    background: {
+                        enabled: false,
+                        color: "rgba(0,0,0,0.3)",
+                        opacity: 30
+                    },
+                    padding: {
+                        vertical: 8,
+                        horizontal: 15
+                    }
+                },
+                bits: {
+                    fontSize: 42,
+                    labelFontSize: 14,
+                    colors: {
+                        text: "#2ed573",
+                        label: "#aaaaaa",
+                        border: "#2ed573",
+                        background: "rgba(0,0,0,0.3)"
+                    },
+                    border: {
+                        width: 2,
+                        style: "solid",
+                        radius: 0
+                    },
+                    background: {
+                        enabled: false,
+                        color: "rgba(0,0,0,0.3)",
+                        opacity: 30
+                    },
+                    padding: {
+                        vertical: 8,
+                        horizontal: 15
+                    }
+                },
+                subgoal: {
+                    fontSize: 42,
+                    labelFontSize: 14,
+                    colors: {
+                        text: "#00d2d3",
+                        label: "#aaaaaa",
+                        border: "#00d2d3",
                         background: "rgba(0,0,0,0.3)"
                     },
                     border: {
@@ -945,7 +1211,7 @@
             "Lobster", "Pacifico", "Permanent Marker", "Righteous", "Fredoka One"
         ];
 
-        const widgets = ['followers', 'monthly', 'lifetime'];
+        const widgets = ['followers', 'subgoal', 'bits', 'monthly', 'lifetime'];
 
         function init() {
             loadConfig();
@@ -1298,6 +1564,54 @@ const DEFAULT_CONFIG = {
                 horizontal: ${config.widgets.followers.padding.horizontal}
             }
         },
+        bits: {
+            fontSize: ${config.widgets.bits.fontSize},
+            labelFontSize: ${config.widgets.bits.labelFontSize},
+            colors: {
+                text: "${config.widgets.bits.colors.text}",
+                label: "${config.widgets.bits.colors.label}",
+                border: "${config.widgets.bits.colors.border}",
+                background: "${config.widgets.bits.colors.background}"
+            },
+            border: {
+                width: ${config.widgets.bits.border.width},
+                style: "${config.widgets.bits.border.style}",
+                radius: ${config.widgets.bits.border.radius}
+            },
+            background: {
+                enabled: ${config.widgets.bits.background.enabled},
+                color: "${config.widgets.bits.background.color}",
+                opacity: ${config.widgets.bits.background.opacity || 30}
+            },
+            padding: {
+                vertical: ${config.widgets.bits.padding.vertical},
+                horizontal: ${config.widgets.bits.padding.horizontal}
+            }
+        },
+        subgoal: {
+            fontSize: ${config.widgets.subgoal.fontSize},
+            labelFontSize: ${config.widgets.subgoal.labelFontSize},
+            colors: {
+                text: "${config.widgets.subgoal.colors.text}",
+                label: "${config.widgets.subgoal.colors.label}",
+                border: "${config.widgets.subgoal.colors.border}",
+                background: "${config.widgets.subgoal.colors.background}"
+            },
+            border: {
+                width: ${config.widgets.subgoal.border.width},
+                style: "${config.widgets.subgoal.border.style}",
+                radius: ${config.widgets.subgoal.border.radius}
+            },
+            background: {
+                enabled: ${config.widgets.subgoal.background.enabled},
+                color: "${config.widgets.subgoal.background.color}",
+                opacity: ${config.widgets.subgoal.background.opacity || 30}
+            },
+            padding: {
+                vertical: ${config.widgets.subgoal.padding.vertical},
+                horizontal: ${config.widgets.subgoal.padding.horizontal}
+            }
+        },
         monthly: {
             fontSize: ${config.widgets.monthly.fontSize},
             labelFontSize: ${config.widgets.monthly.labelFontSize},
@@ -1403,7 +1717,7 @@ function applyWidgetStyles() {
     root.style.setProperty('--text-shadow', WIDGET_CONFIG.textShadow);
     root.style.setProperty('--gap', WIDGET_CONFIG.layout.gap + 'px');
     
-    const widgets = ['followers', 'monthly', 'lifetime'];
+    const widgets = ['followers', 'subgoal', 'bits', 'monthly', 'lifetime'];
     
     widgets.forEach(widget => {
         const config = WIDGET_CONFIG.widgets[widget];

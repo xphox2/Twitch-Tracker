@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Twitch Stats Sidebar 2</title>
+    <title>Twitch Stats Sidebar 3</title>
     <script src="branding-setup.js"></script>
     <style>
         :root {
@@ -10,7 +10,7 @@
             --font-weight: bold;
             --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
             --gap: 5px;
-            
+
             /* Widget: Followers */
             --widget-followers-font-size: 48px;
             --widget-followers-label-font-size: 14px;
@@ -22,7 +22,19 @@
             --widget-followers-border-style: solid;
             --widget-followers-border-radius: 0px;
             --widget-followers-padding: 8px 15px;
-            
+
+            /* Widget: Bits Today */
+            --widget-bits-font-size: 42px;
+            --widget-bits-label-font-size: 14px;
+            --widget-bits-text-color: #2ed573;
+            --widget-bits-label-color: #aaaaaa;
+            --widget-bits-border-color: #2ed573;
+            --widget-bits-bg-color: transparent;
+            --widget-bits-border-width: 2px;
+            --widget-bits-border-style: solid;
+            --widget-bits-border-radius: 0px;
+            --widget-bits-padding: 8px 15px;
+
             /* Widget: Monthly */
             --widget-monthly-font-size: 42px;
             --widget-monthly-label-font-size: 14px;
@@ -34,7 +46,7 @@
             --widget-monthly-border-style: solid;
             --widget-monthly-border-radius: 0px;
             --widget-monthly-padding: 8px 15px;
-            
+
             /* Widget: Lifetime */
             --widget-lifetime-font-size: 36px;
             --widget-lifetime-label-font-size: 14px;
@@ -63,85 +75,90 @@
             gap: var(--gap);
         }
 
-        /* Followers Widget */
+        .widget {
+            min-width: 180px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .widget .stat-label {
+            text-transform: uppercase;
+            text-shadow: none;
+        }
+
+        .widget .stat-value {
+            font-weight: var(--font-weight);
+            text-shadow: var(--text-shadow);
+        }
+
         .widget-followers {
             background: var(--widget-followers-bg-color);
             border-radius: var(--widget-followers-border-radius);
             padding: var(--widget-followers-padding);
-            min-width: 180px;
-            text-align: center;
             border: var(--widget-followers-border-width) var(--widget-followers-border-style) var(--widget-followers-border-color);
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
         }
 
         .widget-followers .stat-label {
             font-size: var(--widget-followers-label-font-size);
-            text-transform: uppercase;
             color: var(--widget-followers-label-color);
-            text-shadow: none;
         }
 
         .widget-followers .stat-value {
             font-size: var(--widget-followers-font-size);
-            font-weight: var(--font-weight);
             color: var(--widget-followers-text-color);
-            text-shadow: var(--text-shadow);
         }
 
-        /* Monthly Widget */
+        .widget-bits {
+            background: var(--widget-bits-bg-color);
+            border-radius: var(--widget-bits-border-radius);
+            padding: var(--widget-bits-padding);
+            border: var(--widget-bits-border-width) var(--widget-bits-border-style) var(--widget-bits-border-color);
+        }
+
+        .widget-bits .stat-label {
+            font-size: var(--widget-bits-label-font-size);
+            color: var(--widget-bits-label-color);
+        }
+
+        .widget-bits .stat-value {
+            font-size: var(--widget-bits-font-size);
+            color: var(--widget-bits-text-color);
+        }
+
         .widget-monthly {
             background: var(--widget-monthly-bg-color);
             border-radius: var(--widget-monthly-border-radius);
             padding: var(--widget-monthly-padding);
-            min-width: 180px;
-            text-align: center;
             border: var(--widget-monthly-border-width) var(--widget-monthly-border-style) var(--widget-monthly-border-color);
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
         }
 
         .widget-monthly .stat-label {
             font-size: var(--widget-monthly-label-font-size);
-            text-transform: uppercase;
             color: var(--widget-monthly-label-color);
-            text-shadow: none;
         }
 
         .widget-monthly .stat-value {
             font-size: var(--widget-monthly-font-size);
-            font-weight: var(--font-weight);
             color: var(--widget-monthly-text-color);
-            text-shadow: var(--text-shadow);
         }
 
-        /* Lifetime Widget */
         .widget-lifetime {
             background: var(--widget-lifetime-bg-color);
             border-radius: var(--widget-lifetime-border-radius);
             padding: var(--widget-lifetime-padding);
-            min-width: 180px;
-            text-align: center;
             border: var(--widget-lifetime-border-width) var(--widget-lifetime-border-style) var(--widget-lifetime-border-color);
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
         }
 
         .widget-lifetime .stat-label {
             font-size: var(--widget-lifetime-label-font-size);
-            text-transform: uppercase;
             color: var(--widget-lifetime-label-color);
-            text-shadow: none;
         }
 
         .widget-lifetime .stat-value {
             font-size: var(--widget-lifetime-font-size);
-            font-weight: var(--font-weight);
             color: var(--widget-lifetime-text-color);
-            text-shadow: var(--text-shadow);
         }
 
         .timestamp {
@@ -154,17 +171,24 @@
 </head>
 <body>
     <div class="sidebar-container">
-        <div class="widget-followers">
+        <div class="widget widget-followers">
             <div class="stat-label">Followers</div>
             <div class="stat-value" id="followers">0</div>
         </div>
-        <div class="widget-monthly">
-            <div class="stat-label">Artists (Monthly)</div>
-            <div class="stat-value" id="artist-monthly">$0</div>
+
+        <div class="widget widget-bits">
+            <div class="stat-label">Bits Today</div>
+            <div class="stat-value" id="bits-today">$0.00</div>
         </div>
-        <div class="widget-lifetime">
+
+        <div class="widget widget-monthly">
+            <div class="stat-label">Artists (Monthly)</div>
+            <div class="stat-value" id="artist-monthly">$0.00</div>
+        </div>
+
+        <div class="widget widget-lifetime">
             <div class="stat-label">Artists (Lifetime)</div>
-            <div class="stat-value" id="artist-lifetime">$0</div>
+            <div class="stat-value" id="artist-lifetime">$0.00</div>
         </div>
     </div>
     <div class="timestamp" id="timestamp">Updated: --</div>
@@ -176,6 +200,7 @@
                 const stats = await statsRes.json();
 
                 document.getElementById('followers').textContent = stats.followers || 0;
+                document.getElementById('bits-today').textContent = '$' + (stats.bits_today || 0).toFixed(2);
                 document.getElementById('artist-monthly').textContent = '$' + (stats.artist_raise_30 || 0).toFixed(2);
                 document.getElementById('artist-lifetime').textContent = '$' + (stats.artist_yearly || 0).toFixed(2);
 

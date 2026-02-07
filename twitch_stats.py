@@ -8,6 +8,7 @@ Includes built-in HTTP server for OBS Browser Source overlay.
 
 import requests
 import json
+from json import JSONDecodeError
 import csv
 import os
 import time
@@ -20,6 +21,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import socket
 import ssl
+import re
 
 CONFIG_FILE = "config.json"
 DATA_DIR = "data"
@@ -30,19 +32,54 @@ DAILY_BITS_FILE = os.path.join(DATA_DIR, "daily_bits.json")
 BITS_TRACK_FILE = os.path.join(DATA_DIR, "bits_tracker.json")
 SUB_TIERS_FILE = os.path.join(DATA_DIR, "sub_tiers.json")
 SUBSCRIBERS_FILE = os.path.join(DATA_DIR, "subscribers.json")
+SUB_REVENUE_FILE = os.path.join(DATA_DIR, "sub_revenue.json")
+SUB_GOAL_FILE = os.path.join(DATA_DIR, "sub_goal.json")
+BRANDING_CONFIG_FILE = os.path.join(DATA_DIR, "branding.json")
 ARCHIVE_RETENTION_DAYS = 365
 
 BITS_VALUE_USD_PER_BIT = 0.01
 
+# Some Twitch UI actions look like gifts but are Bits spends (channel-specific).
+# Default: treat one-tap gift redemptions as 100 Bits.
+ONE_TAP_GIFT_BITS_COST = 100
+
+CHEERMOTE_CACHE_TTL_SECONDS = 6 * 60 * 60
+CHEERMOTE_CACHE_LOCK = threading.Lock()
+CHEERMOTE_CACHE = {
+    "fetched_at": 0.0,
+    "prefixes": None,
+}
+
 # Background threads update bits + artist earnings; protect file updates.
 BITS_TRACK_LOCK = threading.Lock()
 ARTIST_EARNINGS_LOCK = threading.Lock()
+SUB_REVENUE_LOCK = threading.RLock()
+SUB_GOAL_LOCK = threading.RLock()
 
 TIER_VALUES = {
     "1000": 2.50,
     "2000": 5.00,
     "3000": 24.99
 }
+
+# Stable archive schema (avoid CSV header drift when stats keys change).
+ARCHIVE_FIELDS = [
+    "timestamp",
+    "subscribers",
+    "followers",
+    "bits_today",
+    "bits_total",
+    "subs_today_revenue",
+    "subs_total_revenue",
+    "artist_bits_monthly",
+    "artist_subs_monthly",
+    "artist_gifted_monthly",
+    "artist_raise_30",
+    "artist_yearly",
+    "total_revenue",
+    "tiers",
+    "gifted_tiers",
+]
 
 # Notes:
 # - Followers endpoint uses moderator:read:followers
@@ -67,6 +104,44 @@ def load_config():
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
     return None
+
+def _safe_load_json(path, default):
+    """Load JSON from disk, recovering from corrupted/partial files."""
+    if not os.path.exists(path):
+        return default
+
+    # Try primary file.
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except (OSError, JSONDecodeError):
+        pass
+
+    # Try leftover temp file (in case a previous write crashed mid-replace).
+    tmp_path = path + ".tmp"
+    if os.path.exists(tmp_path):
+        try:
+            with open(tmp_path, 'r') as f:
+                data = json.load(f)
+            # Best-effort promote temp to primary.
+            try:
+                os.replace(tmp_path, path)
+            except Exception:
+                pass
+            return data
+        except (OSError, JSONDecodeError):
+            pass
+
+    # Quarantine corrupted file so we can start fresh.
+    try:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        corrupt_path = path + f".corrupt.{ts}"
+        os.replace(path, corrupt_path)
+        print(f"WARNING: Corrupted JSON detected; moved to {corrupt_path}")
+    except Exception:
+        print(f"WARNING: Corrupted JSON detected in {path}; starting fresh")
+
+    return default
 
 def get_user_id(client_id, oauth, username):
     url = "https://api.twitch.tv/helix/users"
@@ -144,13 +219,17 @@ def get_sub_tiers(client_id, oauth, broadcaster_id):
     return tiers, subs
 
 def load_subscribers():
-    if os.path.exists(SUBSCRIBERS_FILE):
-        with open(SUBSCRIBERS_FILE, 'r') as f:
-            return json.load(f)
-    return {"subs": {}, "history": []}
+    return _safe_load_json(SUBSCRIBERS_FILE, {"subs": {}, "history": []})
 
 def save_subscribers(data):
     os.makedirs(DATA_DIR, exist_ok=True)
+    # Avoid unbounded growth if a bug/loop spams history.
+    try:
+        history = data.get("history")
+        if isinstance(history, list) and len(history) > 10000:
+            data["history"] = history[-10000:]
+    except Exception:
+        pass
     tmp_path = SUBSCRIBERS_FILE + ".tmp"
     with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
@@ -159,9 +238,37 @@ def save_subscribers(data):
 def sync_subscribers(current_subs):
     data = load_subscribers()
 
+    subs_by_id = data.get("subs", {})
+    history = data.get("history", [])
+
+    # First run (or after a reset): baseline without counting revenue.
+    # Otherwise we'd incorrectly treat all current active subs as "new".
+    if (not isinstance(subs_by_id, dict) or len(subs_by_id) == 0) and (not isinstance(history, list) or len(history) == 0):
+        timestamp = datetime.now().isoformat()
+        seeded = {}
+        for sub in current_subs:
+            user_id = str(sub.get("user_id") or "")
+            if not user_id:
+                continue
+            merged = dict(sub)
+            merged["status"] = "active"
+            merged["started_at"] = timestamp
+            merged.setdefault("gifts_received", 0)
+            seeded[user_id] = merged
+
+        data["subs"] = seeded
+        save_subscribers(data)
+        return {
+            "total": len(current_subs),
+            "new": 0,
+            "ended": 0,
+            "baseline": True,
+            "earned_nongift_revenue": 0.0,
+            "earned_gifted_revenue": 0.0,
+        }
+
     # Use user_id as the stable key (Helix returns user_id; not an object id).
     current_ids = {str(sub.get("user_id")) for sub in current_subs if sub.get("user_id")}
-    subs_by_id = data.get("subs", {})
     active_stored_ids = {
         str(user_id)
         for user_id, sub in subs_by_id.items()
@@ -220,12 +327,35 @@ def sync_subscribers(current_subs):
 
     save_subscribers(data)
 
+    # Revenue earned comes from newly detected subs only; expirations do not subtract.
+    earned_nongift_revenue = 0.0
+    earned_gifted_revenue = 0.0
+    for user_id in new_ids:
+        sub = current_subs_by_id.get(user_id, {})
+        tier = str(sub.get("tier") or "")
+        price = float(TIER_VALUES.get(tier, 0.0) or 0.0)
+        if price <= 0:
+            continue
+        if bool(sub.get("is_gift", False)):
+            earned_gifted_revenue += price
+        else:
+            earned_nongift_revenue += price
+
     if len(new_ids) > 0:
         print(f"  + {len(new_ids)} new subscriber(s) detected")
+        # Avoid huge startup spam if the file was reset/corrupted.
+        max_lines = 25
+        shown = 0
         for user_id in sorted(new_ids):
+            if shown >= max_lines:
+                break
             sub = current_subs_by_id.get(user_id, {})
             tier = sub.get("tier", "unknown")
             print(f"    - {sub.get('user_name', 'Unknown')}: Tier {tier}, Gift: {sub.get('is_gift', False)}")
+            shown += 1
+        remaining = len(new_ids) - shown
+        if remaining > 0:
+            print(f"    ... and {remaining} more")
 
     if len(ended_ids) > 0:
         print(f"  - {len(ended_ids)} subscriber(s) ended")
@@ -233,20 +363,23 @@ def sync_subscribers(current_subs):
     return {
         "total": len(current_subs),
         "new": len(new_ids),
-        "ended": len(ended_ids)
+        "ended": len(ended_ids),
+        "baseline": False,
+        "earned_nongift_revenue": round(earned_nongift_revenue, 2),
+        "earned_gifted_revenue": round(earned_gifted_revenue, 2),
     }
 
 def load_sub_tiers():
-    if os.path.exists(SUB_TIERS_FILE):
-        with open(SUB_TIERS_FILE, 'r') as f:
-            return json.load(f)
-    return {
-        "total_subs_revenue": 0,
-        "gifted_subs_revenue": 0,
-        "nongift_subs_revenue": 0,
-        "tiers": {"1000": 0, "2000": 0, "3000": 0},
-        "gifted_tiers": {"1000": 0, "2000": 0, "3000": 0}
-    }
+    return _safe_load_json(
+        SUB_TIERS_FILE,
+        {
+            "total_subs_revenue": 0,
+            "gifted_subs_revenue": 0,
+            "nongift_subs_revenue": 0,
+            "tiers": {"1000": 0, "2000": 0, "3000": 0},
+            "gifted_tiers": {"1000": 0, "2000": 0, "3000": 0},
+        },
+    )
 
 def save_sub_tiers(data):
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -254,6 +387,174 @@ def save_sub_tiers(data):
     with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
     os.replace(tmp_path, SUB_TIERS_FILE)
+
+def load_sub_revenue():
+    existed = os.path.exists(SUB_REVENUE_FILE)
+    data = _safe_load_json(
+        SUB_REVENUE_FILE,
+        {
+            "date": None,
+            "today_total": 0.0,
+            "today_nongift": 0.0,
+            "today_gifted": 0.0,
+            "lifetime_total": 0.0,
+            "lifetime_nongift": 0.0,
+            "lifetime_gifted": 0.0,
+        },
+    )
+
+    # One-time best-effort seed for existing installs (carry forward the old
+    # displayed subs total as a baseline so totals don't drop to $0.00).
+    if not existed:
+        try:
+            legacy = _safe_load_json(SUB_TIERS_FILE, {})
+            baseline = float(legacy.get("total_subs_revenue", 0.0) or 0.0)
+            if baseline > 0:
+                data["lifetime_total"] = round(baseline, 2)
+                data["lifetime_nongift"] = round(baseline, 2)
+                data["lifetime_gifted"] = 0.0
+        except Exception:
+            pass
+
+        # Ensure the file exists immediately (useful for overlays/debugging).
+        try:
+            save_sub_revenue(data)
+        except Exception:
+            pass
+
+    today = get_current_date_key()
+    if data.get("date") != today:
+        data["date"] = today
+        data["today_total"] = 0.0
+        data["today_nongift"] = 0.0
+        data["today_gifted"] = 0.0
+
+    # Backwards compatibility / key safety.
+    data.setdefault("today_total", 0.0)
+    data.setdefault("today_nongift", 0.0)
+    data.setdefault("today_gifted", 0.0)
+    data.setdefault("lifetime_total", 0.0)
+    data.setdefault("lifetime_nongift", 0.0)
+    data.setdefault("lifetime_gifted", 0.0)
+    return data
+
+def save_sub_revenue(data):
+    with SUB_REVENUE_LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp_path = SUB_REVENUE_FILE + ".tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, SUB_REVENUE_FILE)
+
+def _get_month_key(dt=None):
+    if dt is None:
+        dt = datetime.now()
+    return dt.strftime("%Y-%m")
+
+def load_sub_goal():
+    existed = os.path.exists(SUB_GOAL_FILE)
+    data = _safe_load_json(
+        SUB_GOAL_FILE,
+        {
+            "month": _get_month_key(),
+            "current": 0,
+            "goal": 150,
+            "goal_a": 150,
+            "goal_b": 100,
+        },
+    )
+
+    month = _get_month_key()
+    if data.get("month") != month:
+        data["month"] = month
+        data["current"] = 0
+        data["goal"] = int(data.get("goal_a", 150) or 150)
+
+    # Backwards compatibility / key safety.
+    data.setdefault("goal_a", 150)
+    data.setdefault("goal_b", 100)
+    data.setdefault("goal", int(data.get("goal_a", 150) or 150))
+    data.setdefault("current", 0)
+
+    # Ensure the file exists so overlays can fetch it.
+    if not existed:
+        try:
+            save_sub_goal(data)
+        except Exception:
+            pass
+    return data
+
+def save_sub_goal(data):
+    with SUB_GOAL_LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp_path = SUB_GOAL_FILE + ".tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, SUB_GOAL_FILE)
+
+def increment_sub_goal(count=1):
+    """Increment the subscriber goal counter (never decreases).
+
+    Rolls over between goal_a (150) and goal_b (100) while carrying remainder.
+    """
+    try:
+        inc = int(count)
+    except Exception:
+        inc = 0
+    if inc <= 0:
+        return load_sub_goal()
+
+    with SUB_GOAL_LOCK:
+        data = load_sub_goal()
+        current = int(data.get("current", 0) or 0)
+        goal_a = int(data.get("goal_a", 150) or 150)
+        goal_b = int(data.get("goal_b", 100) or 100)
+        goal = int(data.get("goal", goal_a) or goal_a)
+        if goal <= 0:
+            goal = goal_a if goal_a > 0 else 150
+
+        current += inc
+
+        # Carry remainder if we cross the goal.
+        while current >= goal and goal > 0:
+            current -= goal
+            goal = goal_b if goal == goal_a else goal_a
+
+        data["current"] = current
+        data["goal"] = goal
+        save_sub_goal(data)
+        return data
+
+def update_sub_revenue(earned_nongift_revenue, earned_gifted_revenue):
+    """Accumulate earned subscription revenue (never decreases on expiry)."""
+    try:
+        earned_nongift_revenue = float(earned_nongift_revenue or 0.0)
+    except Exception:
+        earned_nongift_revenue = 0.0
+    try:
+        earned_gifted_revenue = float(earned_gifted_revenue or 0.0)
+    except Exception:
+        earned_gifted_revenue = 0.0
+
+    if earned_nongift_revenue < 0:
+        earned_nongift_revenue = 0.0
+    if earned_gifted_revenue < 0:
+        earned_gifted_revenue = 0.0
+
+    with SUB_REVENUE_LOCK:
+        data = load_sub_revenue()
+        inc_total = earned_nongift_revenue + earned_gifted_revenue
+
+        data["today_nongift"] = round(float(data.get("today_nongift", 0.0) or 0.0) + earned_nongift_revenue, 2)
+        data["today_gifted"] = round(float(data.get("today_gifted", 0.0) or 0.0) + earned_gifted_revenue, 2)
+        data["today_total"] = round(float(data.get("today_total", 0.0) or 0.0) + inc_total, 2)
+
+        data["lifetime_nongift"] = round(float(data.get("lifetime_nongift", 0.0) or 0.0) + earned_nongift_revenue, 2)
+        data["lifetime_gifted"] = round(float(data.get("lifetime_gifted", 0.0) or 0.0) + earned_gifted_revenue, 2)
+        data["lifetime_total"] = round(float(data.get("lifetime_total", 0.0) or 0.0) + inc_total, 2)
+
+        save_sub_revenue(data)
+        return data
 
 def count_gifted_subs(subs):
     gifted = {"1000": 0, "2000": 0, "3000": 0}
@@ -279,6 +580,58 @@ def get_followers(client_id, oauth, broadcaster_id):
     elif response.status_code == 429:
         print("WARNING: Twitch API rate limit exceeded (followers).")
     return 0
+
+def get_cheermote_prefixes(client_id, oauth, broadcaster_id):
+    """Fetch cheermote prefixes so we can parse cheermote tokens in chat.
+
+    Used as a fallback when IRC doesn't include a bits= tag.
+    """
+    now = time.time()
+    with CHEERMOTE_CACHE_LOCK:
+        cached = CHEERMOTE_CACHE.get("prefixes")
+        fetched_at = float(CHEERMOTE_CACHE.get("fetched_at", 0.0) or 0.0)
+        if cached is not None and (now - fetched_at) < CHEERMOTE_CACHE_TTL_SECONDS:
+            return cached
+
+    if not client_id or not oauth or not broadcaster_id:
+        return ["cheer", "dino"]
+
+    url = "https://api.twitch.tv/helix/bits/cheermotes"
+    headers = {
+        "Client-ID": client_id,
+        "Authorization": f"Bearer {oauth}",
+    }
+    params = {"broadcaster_id": broadcaster_id}
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+    except Exception:
+        return ["cheer", "dino"]
+
+    if response.status_code != 200:
+        return ["cheer", "dino"]
+
+    try:
+        payload = response.json() or {}
+    except Exception:
+        return ["cheer", "dino"]
+
+    prefixes = set()
+    for item in payload.get("data", []) or []:
+        p = str(item.get("prefix") or "").strip()
+        if p:
+            prefixes.add(p.lower())
+
+    # Always support the default cheer token.
+    prefixes.add("cheer")
+    # Channel-specific: viewer UI commonly shows dino cheermotes.
+    prefixes.add("dino")
+
+    out = sorted(prefixes)
+    with CHEERMOTE_CACHE_LOCK:
+        CHEERMOTE_CACHE["prefixes"] = out
+        CHEERMOTE_CACHE["fetched_at"] = now
+    return out
 
 def load_bits_tracker():
     with BITS_TRACK_LOCK:
@@ -359,6 +712,190 @@ def record_cheer(bits_count):
         bits_label = f"{bits_count} bits"
     print(f"  + Cheer detected: {bits_label} (${revenue:.2f})")
 
+def record_bits_spend(bits_count, label):
+    """Record Bits that were spent (not necessarily a Cheer).
+
+    Updates the Bits tracker + artist earnings just like a cheer.
+    """
+    try:
+        bits_count = int(bits_count)
+    except Exception:
+        return
+    if bits_count <= 0:
+        return
+
+    revenue = bits_count * BITS_VALUE_USD_PER_BIT
+
+    data = load_bits_tracker()
+    data["today_bits_count"] = int(data.get("today_bits_count", 0) or 0) + bits_count
+    data["today_bits_revenue"] = round(float(data.get("today_bits_revenue", 0.0) or 0.0) + revenue, 2)
+    data["lifetime_bits_count"] = int(data.get("lifetime_bits_count", 0) or 0) + bits_count
+    data["lifetime_bits_revenue_tracked"] = round(float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0) + revenue, 2)
+    data["lifetime_bits_revenue"] = round(
+        float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+        + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+        2,
+    )
+    save_bits_tracker(data)
+
+    try:
+        update_artist_earnings(revenue * 0.30, 0.0, 0.0)
+    except Exception:
+        pass
+
+    print(f"  + {label}: {bits_count} bits (${revenue:.2f})")
+
+def _normalize_sub_plan_to_tier(plan):
+    """Map IRC/EventSub plan values to our tier keys (1000/2000/3000)."""
+    if plan is None:
+        return "1000"
+    plan = str(plan).strip()
+    if not plan:
+        return "1000"
+    low = plan.lower()
+    if low == "prime":
+        return "1000"
+    if plan in ("1000", "2000", "3000"):
+        return plan
+    return "1000"
+
+def record_sub_event_from_irc(tags):
+    """Count sub earnings events from Twitch IRC USERNOTICE tags.
+
+    Tracks:
+    - msg-id=sub (new paid sub)
+    - msg-id=resub (renewal)
+    - msg-id=subgift / anonsubgift (single gifted sub)
+    - msg-id=submysterygift / anonsubmysterygift (gift bombs)
+
+    Notes:
+    - Prime counts as Tier 1 for revenue purposes.
+    - We only ever increment earnings; nothing here subtracts.
+    """
+    try:
+        msg_id = str(tags.get("msg-id") or "")
+        if msg_id not in {
+            "sub",
+            "resub",
+            "subgift",
+            "anonsubgift",
+            "submysterygift",
+            "anonsubmysterygift",
+            "onetapgiftredeemed",
+        }:
+            return
+
+        # Ignore gift-bomb summary events for earnings to avoid double counting.
+        # We count the individual subgift/anonsubgift events instead.
+        if msg_id in {"submysterygift", "anonsubmysterygift"}:
+            tier = _normalize_sub_plan_to_tier(tags.get("msg-param-sub-plan"))
+            print(f"  + Gift Bomb detected: Tier {tier} (ignored for earnings)")
+            return
+
+        # If Twitch also emits a sub event for a gifted subscription, ignore it.
+        # We count the gift event instead.
+        if msg_id == "sub":
+            was_gifted = str(tags.get("msg-param-was-gifted") or "").lower()
+            if was_gifted in {"1", "true", "yes"}:
+                return
+
+        # One-tap gift redemptions: treat as Bits spend (not subscription revenue).
+        # Still counts as a goal increment (a gifted sub was redeemed).
+        if msg_id == "onetapgiftredeemed":
+            try:
+                increment_sub_goal(1)
+            except Exception:
+                pass
+            record_bits_spend(int(ONE_TAP_GIFT_BITS_COST), "One-Tap Gift")
+            return
+
+        tier = _normalize_sub_plan_to_tier(tags.get("msg-param-sub-plan"))
+        price = float(TIER_VALUES.get(tier, 0.0) or 0.0)
+        if price <= 0:
+            return
+
+        is_gift = msg_id in {
+            "subgift",
+            "anonsubgift",
+            "onetapgiftredeemed",
+        }
+
+        earned_nongift = 0.0
+        earned_gifted = 0.0
+        if is_gift:
+            earned_gifted = price
+        else:
+            earned_nongift = price
+
+        try:
+            update_sub_revenue(earned_nongift, earned_gifted)
+        except Exception:
+            pass
+
+        # Subscriber goal progress is based on earned sub events (never decreases).
+        try:
+            increment_sub_goal(1)
+        except Exception:
+            pass
+
+        try:
+            update_artist_earnings(0.0, earned_nongift * 0.30, earned_gifted * 0.30)
+        except Exception:
+            pass
+
+        label = {
+            "sub": "Sub",
+            "resub": "Resub",
+            "subgift": "Gift Sub",
+            "anonsubgift": "Anon Gift Sub",
+            "onetapgiftredeemed": "One-Tap Gift",
+        }.get(msg_id, msg_id)
+        dollars = (earned_nongift + earned_gifted)
+        print(f"  + {label} detected: Tier {tier} (${dollars:.2f})")
+    except Exception:
+        return
+
+def record_gigantify_from_irc(tags):
+    """Record the Gigantify Emote power-up spend (configured as 50 bits)."""
+    # Twitch doesn't reliably include the Bits amount in IRC tags for power-ups.
+    # The streamer sets the price; for this channel it's fixed at 50 bits.
+    record_bits_spend(50, "Gigantify power-up")
+
+def _is_gigantify_powerup(tags):
+    """Best-effort detection of Gigantify events in IRC tags."""
+    try:
+        # Some clients/events surface this as msg-id-like values.
+        msg_id = str(tags.get("msg-id") or "")
+        low_msg_id = msg_id.lower()
+        if msg_id in {
+            "power_ups_gigantified_emote",
+            "power-ups-gigantified-emote",
+            "gigantified_emote",
+            "gigantified-emote",
+            "gigantify_emote",
+            "gigantify-emote",
+        }:
+            return True
+
+        if "gigant" in low_msg_id:
+            return True
+
+        # Power-ups are often exposed via the animation-id tag on chat messages.
+        anim = str(tags.get("animation-id") or "")
+        low_anim = anim.lower()
+        if anim in {
+            "power_ups_gigantified_emote",
+            "gigantified_emote",
+            "gigantified-emote",
+        }:
+            return True
+
+        if "gigant" in low_anim:
+            return True
+    except Exception:
+        return False
+    return False
+
 def _parse_irc_tags(tag_str):
     tags = {}
     for part in tag_str.split(';'):
@@ -369,25 +906,96 @@ def _parse_irc_tags(tag_str):
             tags[part] = ""
     return tags
 
+def _extract_privmsg_text(rest):
+    # Format: ":user!user@user.tmi.twitch.tv PRIVMSG #channel :message"
+    try:
+        if " PRIVMSG " not in rest:
+            return ""
+        if " :" not in rest:
+            return ""
+        return rest.split(" :", 1)[1]
+    except Exception:
+        return ""
+
+def _parse_cheermote_bits_from_text(text, prefixes):
+    if not text or not prefixes:
+        return 0
+
+    prefix_set = set(str(p).lower() for p in prefixes if p)
+    total = 0
+
+    words = [re.sub(r"^[^A-Za-z0-9]+|[^A-Za-z0-9]+$", "", w) for w in str(text).split()]
+    words = [w for w in words if w]
+
+    i = 0
+    while i < len(words):
+        token = words[i]
+
+        # Pattern 1: dino100 / cheer100
+        m = re.match(r"^([A-Za-z]+)(\d+)$", token)
+        if m:
+            prefix = m.group(1).lower()
+            if prefix in prefix_set:
+                try:
+                    total += int(m.group(2))
+                except Exception:
+                    pass
+            i += 1
+            continue
+
+        # Pattern 2: dino 100 (UI sometimes displays prefix + amount separately)
+        if token.isalpha() and token.lower() in prefix_set and i + 1 < len(words):
+            nxt = words[i + 1]
+            if nxt.isdigit():
+                try:
+                    total += int(nxt)
+                except Exception:
+                    pass
+                i += 2
+                continue
+
+        i += 1
+    return total
+
 def start_bits_irc_listener(config):
     """Background listener that tracks cheers (bits) via Twitch IRC."""
     token = (config or {}).get("access_token")
     username = (config or {}).get("username")
     channel = (config or {}).get("channel") or username
+    client_id = (config or {}).get("client_id")
+    broadcaster_id = (config or {}).get("broadcaster_id")
     if not token or not username or not channel:
-        print("WARNING: IRC bits tracker disabled (missing username/channel/token in config).")
+        missing = []
+        if not token:
+            missing.append("access_token")
+        if not username:
+            missing.append("username")
+        if not channel:
+            missing.append("channel")
+        print("WARNING: IRC bits tracker disabled (missing: " + ", ".join(missing) + ").")
         return
+
+    debug_irc = bool((config or {}).get("debug_irc", False))
 
     def run():
         server = "irc.chat.twitch.tv"
         port = 6697
+        backoff = 2
+
+        # Deduplicate IRC messages by their unique ID (best-effort).
+        seen_msg_ids = set()
+        seen_order = []
+        max_seen = 5000
+
         while True:
             s = None
             try:
                 raw = socket.create_connection((server, port), timeout=15)
                 ctx = ssl.create_default_context()
                 s = ctx.wrap_socket(raw, server_hostname=server)
-                s.settimeout(60)
+                # Twitch IRC may be idle for long periods (no chat activity).
+                # Use a generous timeout and don't treat read timeouts as fatal.
+                s.settimeout(600)
 
                 sock = s
 
@@ -396,16 +1004,31 @@ def start_bits_irc_listener(config):
 
                 send("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership")
                 send(f"PASS oauth:{token}")
-                send(f"NICK {username}")
+                send(f"NICK {str(username).lower()}")
                 send(f"JOIN #{channel.lower()}")
 
                 print(f"IRC bits tracker connected: #{channel.lower()}")
+                backoff = 2
+
+                # Best-effort: load cheermote prefixes for parsing cheermote tokens.
+                cheer_prefixes = get_cheermote_prefixes(client_id, token, broadcaster_id) or ["cheer"]
+                if debug_irc:
+                    try:
+                        print("IRC DEBUG: cheermote prefixes loaded=" + str(len(cheer_prefixes)))
+                    except Exception:
+                        pass
 
                 buf = b""
                 while True:
-                    chunk = s.recv(4096)
+                    try:
+                        chunk = s.recv(4096)
+                    except socket.timeout:
+                        # Idle connection; keep waiting.
+                        continue
+
                     if not chunk:
                         raise ConnectionError("IRC connection closed")
+
                     buf += chunk
                     while b"\r\n" in buf:
                         line, buf = buf.split(b"\r\n", 1)
@@ -418,15 +1041,122 @@ def start_bits_irc_listener(config):
                             send("PONG :tmi.twitch.tv")
                             continue
 
-                        if msg.startswith("@"):
-                            tag_part, rest = msg.split(" ", 1)
-                            tags = _parse_irc_tags(tag_part[1:])
+                        # Surface server notices (auth failures, etc.).
+                        if " NOTICE " in msg or msg.startswith(":tmi.twitch.tv NOTICE"):
+                            print(f"IRC NOTICE: {msg}")
+                            low = msg.lower()
+                            if "login authentication failed" in low or "improperly formatted auth" in low:
+                                print("WARNING: IRC auth failed. Re-run: python twitch_stats.py --setup (ensure chat:read scope).")
+                                return
+
+                        if msg.startswith("@"): 
+                            try:
+                                tag_part, rest = msg.split(" ", 1)
+                            except ValueError:
+                                continue
+
+                            raw_tags = tag_part[1:]
+                            tags = _parse_irc_tags(raw_tags)
+
+                            msg_id = str(tags.get("msg-id") or "")
+
+                            # Cheers should include a bits= tag, but to avoid missing
+                            # any cheers due to tag parsing edge-cases, also parse it
+                            # directly from the raw tags.
                             bits = tags.get("bits")
+                            if not bits and "bits=" in raw_tags:
+                                try:
+                                    for part in raw_tags.split(";"):
+                                        if part.startswith("bits="):
+                                            bits = part.split("=", 1)[1]
+                                            break
+                                except Exception:
+                                    bits = None
+
+                            if debug_irc:
+                                anim = tags.get("animation-id")
+                                # Print when we see any relevant signal.
+                                if bits or anim or msg_id:
+                                    print(
+                                        "IRC DEBUG: id="
+                                        + str(tags.get("id"))
+                                        + " msg-id="
+                                        + str(msg_id)
+                                        + " animation-id="
+                                        + str(anim)
+                                        + " bits="
+                                        + str(bits)
+                                    )
+
+                            # Power-ups (Gigantify) spend bits but are not Cheers.
+                            # Detect via msg-id and/or animation-id.
+                            if _is_gigantify_powerup(tags):
+                                irc_id = tags.get("id")
+                                if irc_id:
+                                    if irc_id in seen_msg_ids:
+                                        continue
+                                    seen_msg_ids.add(irc_id)
+                                    seen_order.append(irc_id)
+                                    if len(seen_order) > max_seen:
+                                        old = seen_order.pop(0)
+                                        try:
+                                            seen_msg_ids.remove(old)
+                                        except KeyError:
+                                            pass
+                                record_gigantify_from_irc(tags)
+
+                            # Count renewals (resubs). These are emitted as USERNOTICE with msg-id=resub.
+                            if msg_id in {
+                                "sub",
+                                "resub",
+                                "subgift",
+                                "anonsubgift",
+                                "submysterygift",
+                                "anonsubmysterygift",
+                                "onetapgiftredeemed",
+                            }:
+                                irc_id = tags.get("id")
+                                if irc_id:
+                                    if irc_id in seen_msg_ids:
+                                        continue
+                                    seen_msg_ids.add(irc_id)
+                                    seen_order.append(irc_id)
+                                    if len(seen_order) > max_seen:
+                                        old = seen_order.pop(0)
+                                        try:
+                                            seen_msg_ids.remove(old)
+                                        except KeyError:
+                                            pass
+                                record_sub_event_from_irc(tags)
+
+                            # Bits cheers (and fallback parsing for cheermote tokens).
                             if bits:
                                 record_cheer(bits)
+                            else:
+                                parsed = _parse_cheermote_bits_from_text(_extract_privmsg_text(rest), cheer_prefixes)
+                                if parsed > 0:
+                                    if debug_irc:
+                                        print("IRC DEBUG: parsed cheermote bits=" + str(parsed))
+                                    record_cheer(parsed)
+                                elif debug_irc:
+                                    # Helpful when Twitch UI shows a cheer but the IRC message
+                                    # didn't include bits= (or we failed to parse it).
+                                    low_rest = (rest or "").lower()
+                                    if "privmsg" in low_rest and "cheer" in low_rest:
+                                        print("IRC DEBUG: cheer-like PRIVMSG without bits tag")
+                        else:
+                            # Some messages may arrive without tags. As a last resort,
+                            # attempt to parse cheermote tokens from the message body.
+                            if " PRIVMSG " in msg and " :" in msg:
+                                parsed = _parse_cheermote_bits_from_text(_extract_privmsg_text(msg), cheer_prefixes)
+                                if parsed > 0:
+                                    if debug_irc:
+                                        print("IRC DEBUG: parsed cheermote bits (no tags)=" + str(parsed))
+                                    record_cheer(parsed)
             except Exception as e:
                 print(f"WARNING: IRC bits tracker error: {e}. Reconnecting...")
-                time.sleep(5)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
             finally:
                 try:
                     if s:
@@ -559,36 +1289,12 @@ def update_artist_earnings(daily_artist_bits, daily_artist_subs, daily_artist_gi
         return new_monthly_bits, new_monthly_subs, new_monthly_gifted, data["lifetime_total"]
 
 def update_totals(current_tiers, gifted_tiers):
+    # Persist tiers for fallback/display purposes only.
     sub_data = load_sub_tiers()
-    total_subs_revenue = sum(count * TIER_VALUES.get(tier, 0) for tier, count in current_tiers.items())
-    gifted_subs_revenue = sum(count * TIER_VALUES.get(tier, 0) for tier, count in gifted_tiers.items())
-    nongift_subs_revenue = max(0.0, total_subs_revenue - gifted_subs_revenue)
-
-    # Backwards-compatible migration: if the new revenue buckets aren't present,
-    # seed them from current values and don't treat this as "new" revenue.
-    if "gifted_subs_revenue" not in sub_data or "nongift_subs_revenue" not in sub_data:
-        sub_data["gifted_subs_revenue"] = round(float(gifted_subs_revenue), 2)
-        sub_data["nongift_subs_revenue"] = round(float(nongift_subs_revenue), 2)
-        sub_data["total_subs_revenue"] = round(float(total_subs_revenue), 2)
-        sub_data["tiers"] = current_tiers
-        sub_data["gifted_tiers"] = gifted_tiers
-        save_sub_tiers(sub_data)
-        return 0.0, 0.0
-
-    prev_gifted = float(sub_data.get("gifted_subs_revenue", 0) or 0)
-    prev_nongift = float(sub_data.get("nongift_subs_revenue", 0) or 0)
-
-    daily_gifted_increment = max(0.0, gifted_subs_revenue - prev_gifted)
-    daily_nongift_increment = max(0.0, nongift_subs_revenue - prev_nongift)
-
-    sub_data["total_subs_revenue"] = round(float(total_subs_revenue), 2)
-    sub_data["gifted_subs_revenue"] = round(float(gifted_subs_revenue), 2)
-    sub_data["nongift_subs_revenue"] = round(float(nongift_subs_revenue), 2)
     sub_data["tiers"] = current_tiers
     sub_data["gifted_tiers"] = gifted_tiers
     save_sub_tiers(sub_data)
-
-    return daily_nongift_increment, daily_gifted_increment
+    return 0.0, 0.0
 
 def fetch_all_stats(config):
     client_id = config["client_id"]
@@ -611,16 +1317,24 @@ def fetch_all_stats(config):
         print(f"ERROR fetching followers: {e}")
         followers = 0
 
+    subs_fetch_ok = True
     try:
         current_tiers, current_subs = get_sub_tiers(client_id, token, broadcaster_id)
         gifted_tiers = count_gifted_subs(current_subs)
     except Exception as e:
+        subs_fetch_ok = False
         print(f"ERROR fetching sub tiers: {e}")
         current_tiers = {"1000": 0, "2000": 0, "3000": 0}
         current_subs = []
         gifted_tiers = {"1000": 0, "2000": 0, "3000": 0}
 
-    sync_subscribers(current_subs)
+    sync_info = {
+        "baseline": False,
+        "earned_nongift_revenue": 0.0,
+        "earned_gifted_revenue": 0.0,
+    }
+    if subs_fetch_ok:
+        sync_info = sync_subscribers(current_subs)
 
     sub_data = load_sub_tiers()
 
@@ -628,6 +1342,15 @@ def fetch_all_stats(config):
         total_manual_subs = sum(sub_data["tiers"].values())
         if total_manual_subs > 0:
             subscribers = total_manual_subs
+
+    # Helix can occasionally return a `total` that doesn't match the paged list size.
+    # Prefer the larger value to avoid displaying an undercount.
+    try:
+        tier_sum = int(sum(int(v or 0) for v in current_tiers.values()))
+        if tier_sum > 0 and int(subscribers or 0) > 0:
+            subscribers = max(int(subscribers), tier_sum)
+    except Exception:
+        pass
 
     if not current_tiers["1000"] and not current_tiers["2000"] and not current_tiers["3000"]:
         if sub_data.get("tiers"):
@@ -637,18 +1360,30 @@ def fetch_all_stats(config):
     bits_today_revenue = float(bits_data.get("today_bits_revenue", 0.0) or 0.0)
     bits_total_revenue = float(bits_data.get("lifetime_bits_revenue", 0.0) or 0.0)
 
-    total_subs_revenue = sum(count * TIER_VALUES[tier] for tier, count in current_tiers.items())
+    # Persist tiers for fallback/display purposes only (do not use for revenue).
+    try:
+        tier_sum = int(sum(int(v or 0) for v in current_tiers.values()))
+    except Exception:
+        tier_sum = 0
+    if subs_fetch_ok and tier_sum > 0:
+        update_totals(current_tiers, gifted_tiers)
 
-    if total_subs_revenue == 0 and sub_data.get("total_subs_revenue", 0) > 0:
-        total_subs_revenue = sub_data["total_subs_revenue"]
+    # Earnings are counted from IRC/EventSub events only. The Helix subscription list
+    # is used for active counts/tiers, not revenue.
+    earnings_data = load_artist_earnings()
+    current_month = get_current_month_key()
+    monthly_artist_bits = float(earnings_data.get("monthly_bits", {}).get(current_month, 0.0) or 0.0)
+    monthly_artist_subs = float(earnings_data.get("monthly_subs", {}).get(current_month, 0.0) or 0.0)
+    monthly_artist_gifted = float(earnings_data.get("monthly_gifted", {}).get(current_month, 0.0) or 0.0)
+    lifetime_total = float(earnings_data.get("lifetime_total", 0.0) or 0.0)
 
-    daily_nongift_increment, daily_gifted_increment = update_totals(current_tiers, gifted_tiers)
+    sub_rev = load_sub_revenue()
+    subs_today_total = float(sub_rev.get("today_total", 0.0) or 0.0)
+    subs_lifetime_total = float(sub_rev.get("lifetime_total", 0.0) or 0.0)
 
-    daily_artist_subs = daily_nongift_increment * 0.30
-    daily_artist_gifted = daily_gifted_increment * 0.30
-
-    # Bits are tracked via IRC in record_cheer() (real-time). Only apply subs/gifted deltas here.
-    monthly_artist_bits, monthly_artist_subs, monthly_artist_gifted, lifetime_total = update_artist_earnings(0.0, daily_artist_subs, daily_artist_gifted)
+    goal_data = load_sub_goal()
+    sub_goal_current = int(goal_data.get("current", 0) or 0)
+    sub_goal_target = int(goal_data.get("goal", 150) or 150)
 
     return {
         "timestamp": datetime.now().isoformat(),
@@ -656,14 +1391,16 @@ def fetch_all_stats(config):
         "followers": followers,
         "bits_today": round(bits_today_revenue, 2),
         "bits_total": round(bits_total_revenue, 2),
-        "subs_today_revenue": round(daily_nongift_increment + daily_gifted_increment, 2),
-        "subs_total_revenue": round(total_subs_revenue, 2),
+        "subs_today_revenue": round(subs_today_total, 2),
+        "subs_total_revenue": round(subs_lifetime_total, 2),
+        "sub_goal_current": sub_goal_current,
+        "sub_goal_target": sub_goal_target,
         "artist_bits_monthly": round(monthly_artist_bits, 2),
         "artist_subs_monthly": round(monthly_artist_subs, 2),
         "artist_gifted_monthly": round(monthly_artist_gifted, 2),
         "artist_raise_30": round(monthly_artist_bits + monthly_artist_subs + monthly_artist_gifted, 2),
         "artist_yearly": round(lifetime_total, 2),
-        "total_revenue": round(bits_total_revenue + total_subs_revenue, 2),
+        "total_revenue": round(bits_total_revenue + subs_lifetime_total, 2),
         "tiers": current_tiers,
         "gifted_tiers": gifted_tiers
     }
@@ -674,10 +1411,18 @@ def save_to_archive(stats):
     file_exists = os.path.exists(archive_file)
 
     with open(archive_file, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=stats.keys())
+        writer = csv.DictWriter(f, fieldnames=ARCHIVE_FIELDS, extrasaction='ignore')
         if not file_exists:
             writer.writeheader()
-        writer.writerow(stats)
+
+        row = {k: stats.get(k, 0) for k in ARCHIVE_FIELDS}
+        # Ensure dict-like columns exist.
+        if not isinstance(row.get("tiers"), dict):
+            row["tiers"] = stats.get("tiers") if isinstance(stats.get("tiers"), dict) else {}
+        if not isinstance(row.get("gifted_tiers"), dict):
+            row["gifted_tiers"] = stats.get("gifted_tiers") if isinstance(stats.get("gifted_tiers"), dict) else {}
+
+        writer.writerow(row)
 
 def save_latest(stats):
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -763,6 +1508,21 @@ def set_initial_totals():
         "gifted_tiers": {"1000": 0, "2000": 0, "3000": 0}
     }
     save_sub_tiers(sub_data)
+
+    # Seed earned subs revenue tracker from the provided baseline.
+    try:
+        seed = {
+            "date": get_current_date_key(),
+            "today_total": 0.0,
+            "today_nongift": 0.0,
+            "today_gifted": 0.0,
+            "lifetime_total": round(float(total_subs_revenue or 0.0), 2),
+            "lifetime_nongift": round(float(total_subs_revenue or 0.0), 2),
+            "lifetime_gifted": 0.0,
+        }
+        save_sub_revenue(seed)
+    except Exception:
+        pass
 
     bits_data = load_bits_tracker()
     bits_data["lifetime_bits_count"] = int(bits_data.get("lifetime_bits_count", 0) or 0)
@@ -962,6 +1722,16 @@ class StatsHandler(http.server.SimpleHTTPRequestHandler):
                     # Write to file
                     with open('branding-setup.js', 'w') as f:
                         f.write(js_content)
+
+                    # Also persist the raw config for debugging/backup.
+                    try:
+                        os.makedirs(DATA_DIR, exist_ok=True)
+                        tmp_path = BRANDING_CONFIG_FILE + ".tmp"
+                        with open(tmp_path, 'w') as f:
+                            json.dump(branding_config, f, indent=2)
+                        os.replace(tmp_path, BRANDING_CONFIG_FILE)
+                    except Exception:
+                        pass
                     
                     # Send success response
                     self.send_response(200)
@@ -994,8 +1764,10 @@ def generate_branding_js(config):
     widgets = config.get('widgets', {})
     
     followers = widgets.get('followers', {})
+    subgoal = widgets.get('subgoal', {})
     monthly = widgets.get('monthly', {})
     lifetime = widgets.get('lifetime', {})
+    bits = widgets.get('bits', {})
     
     return f'''// Central Configuration for All Widgets
 // Generated by Branding Settings
@@ -1034,6 +1806,30 @@ const DEFAULT_CONFIG = {{
             padding: {{
                 vertical: {followers.get('padding', {}).get('vertical', 8)},
                 horizontal: {followers.get('padding', {}).get('horizontal', 15)}
+            }}
+        }},
+        subgoal: {{
+            fontSize: {subgoal.get('fontSize', 42)},
+            labelFontSize: {subgoal.get('labelFontSize', 14)},
+            colors: {{
+                text: "{subgoal.get('colors', {}).get('text', '#00d2d3')}",
+                label: "{subgoal.get('colors', {}).get('label', '#aaaaaa')}",
+                border: "{subgoal.get('colors', {}).get('border', '#00d2d3')}",
+                background: "{subgoal.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
+            }},
+            border: {{
+                width: {subgoal.get('border', {}).get('width', 2)},
+                style: "{subgoal.get('border', {}).get('style', 'solid')}",
+                radius: {subgoal.get('border', {}).get('radius', 0)}
+            }},
+            background: {{
+                enabled: {str(subgoal.get('background', {}).get('enabled', False)).lower()},
+                color: "{subgoal.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
+                opacity: {subgoal.get('background', {}).get('opacity', 30)}
+            }},
+            padding: {{
+                vertical: {subgoal.get('padding', {}).get('vertical', 8)},
+                horizontal: {subgoal.get('padding', {}).get('horizontal', 15)}
             }}
         }},
         monthly: {{
@@ -1082,6 +1878,30 @@ const DEFAULT_CONFIG = {{
             padding: {{
                 vertical: {lifetime.get('padding', {}).get('vertical', 8)},
                 horizontal: {lifetime.get('padding', {}).get('horizontal', 15)}
+            }}
+        }},
+        bits: {{
+            fontSize: {bits.get('fontSize', 42)},
+            labelFontSize: {bits.get('labelFontSize', 14)},
+            colors: {{
+                text: "{bits.get('colors', {}).get('text', '#2ed573')}",
+                label: "{bits.get('colors', {}).get('label', '#aaaaaa')}",
+                border: "{bits.get('colors', {}).get('border', '#2ed573')}",
+                background: "{bits.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
+            }},
+            border: {{
+                width: {bits.get('border', {}).get('width', 2)},
+                style: "{bits.get('border', {}).get('style', 'solid')}",
+                radius: {bits.get('border', {}).get('radius', 0)}
+            }},
+            background: {{
+                enabled: {str(bits.get('background', {}).get('enabled', False)).lower()},
+                color: "{bits.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
+                opacity: {bits.get('background', {}).get('opacity', 30)}
+            }},
+            padding: {{
+                vertical: {bits.get('padding', {}).get('vertical', 8)},
+                horizontal: {bits.get('padding', {}).get('horizontal', 15)}
             }}
         }}
     }}
@@ -1152,7 +1972,7 @@ function applyWidgetStyles() {{
     root.style.setProperty('--text-shadow', WIDGET_CONFIG.textShadow);
     root.style.setProperty('--gap', WIDGET_CONFIG.layout.gap + 'px');
     
-    const widgets = ['followers', 'monthly', 'lifetime'];
+    const widgets = ['followers', 'subgoal', 'bits', 'monthly', 'lifetime'];
     
     widgets.forEach(widget => {{
         const config = WIDGET_CONFIG.widgets[widget];
@@ -1253,6 +2073,12 @@ if __name__ == "__main__":
         print("Setup failed. Please run 'python twitch_stats.py --setup' again.")
         sys.exit(1)
 
+    # Optional per-channel overrides.
+    try:
+        ONE_TAP_GIFT_BITS_COST = int(config.get("one_tap_gift_bits_cost", ONE_TAP_GIFT_BITS_COST))
+    except Exception:
+        pass
+
     print("\n" + "=" * 50)
     print("Twitch Stats Tracker")
     print("=" * 50)
@@ -1284,7 +2110,7 @@ if __name__ == "__main__":
                       f"Subs: {stats['subs_today_revenue']:.2f} today, {stats['subs_total_revenue']:.2f} total | "
                       f"Tiers: T1={stats['tiers'].get('1000', 0)} T2={stats['tiers'].get('2000', 0)} T3={stats['tiers'].get('3000', 0)} | "
                       f"Gifted: {stats.get('gifted_tiers', {}).get('1000', 0)}/{stats.get('gifted_tiers', {}).get('2000', 0)}/{stats.get('gifted_tiers', {}).get('3000', 0)} | "
-                      f"Artist: ${stats['artist_raise_30']:.2f} mo")
+                      f"Artist: ${stats['artist_raise_30']:.2f} mo | ${stats.get('artist_yearly', 0.0):.2f} life")
             else:
                 print(f"[{datetime.now().isoformat()[:19]}] Failed to fetch stats")
             time.sleep(config["poll_interval_seconds"])

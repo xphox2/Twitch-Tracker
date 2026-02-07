@@ -3,5 +3,9 @@
   "client_secret": "",
   "broadcaster_id": "",
   "access_token": "",
+  "username": "",
+  "channel": "",
+  "enable_irc_bits": true,
+  "debug_irc": true,
   "poll_interval_seconds": 10
 }
