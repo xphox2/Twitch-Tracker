@@ -7,5 +7,7 @@
   "channel": "",
   "enable_irc_bits": true,
   "debug_irc": true,
+  "enable_eventsub_bits": true,
+  "debug_eventsub": true,
   "poll_interval_seconds": 10
 }

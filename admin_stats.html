@@ -299,17 +299,17 @@
         <div class="tier-card tier-1">
             <div class="tier-name">Tier 1</div>
             <div class="stat-value" id="tier1-count">0</div>
-            <div class="stat-label">$2.50/sub</div>
+            <div class="stat-label">$4.19/sub</div>
         </div>
         <div class="tier-card tier-2">
             <div class="tier-name">Tier 2</div>
             <div class="stat-value" id="tier2-count">0</div>
-            <div class="stat-label">$5.00/sub</div>
+            <div class="stat-label">$6.99/sub</div>
         </div>
         <div class="tier-card tier-3">
             <div class="tier-name">Tier 3</div>
             <div class="stat-value" id="tier3-count">0</div>
-            <div class="stat-label">$24.99/sub</div>
+            <div class="stat-label">$17.49/sub</div>
         </div>
     </div>
 
@@ -385,6 +385,30 @@
                     </thead>
                     <tbody id="all-subs-list"></tbody>
                 </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-header">
+            <h2>Manual Bits Import</h2>
+        </div>
+        <div style="padding: 24px;">
+            <p style="color: #718096; margin-bottom: 16px;">
+                Add bits that were missed by IRC (small cheermotes under 100 bits). 
+                Copy from your Twitch Activity Feed and paste below.
+            </p>
+            <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+                <input type="text" id="bits-username" placeholder="Username" style="flex: 1; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px;">
+                <input type="number" id="bits-amount" placeholder="Bits" style="width: 100px; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: 14px;">
+                <button class="refresh-btn" onclick="addManualBits()" style="white-space: nowrap;">Add Bits</button>
+            </div>
+            <div id="manual-bits-status" style="color: #38a169; font-size: 14px; min-height: 20px;"></div>
+            <div style="margin-top: 20px; padding: 16px; background: #f7fafc; border-radius: 8px;">
+                <h3 style="font-size: 14px; color: #4a5568; margin-bottom: 12px;">Recently Added Manual Bits</h3>
+                <div id="manual-bits-list" style="font-size: 13px; color: #718096;">
+                    <p>No manual bits added yet</p>
+                </div>
             </div>
         </div>
     </div>
@@ -485,7 +509,7 @@
                     newSubsList.innerHTML = '<tr><td colspan="4" class="empty-message">No new subs yet</td></tr>';
                 } else {
                     newSubs.slice(0, 100).forEach(sub => {
-                        const tierValue = { '1000': 2.50, '2000': 5.00, '3000': 24.99 }[sub.tier];
+                        const tierValue = { '1000': 4.19, '2000': 6.99, '3000': 17.49 }[sub.tier];
                         const tier = tierValue ? '$' + tierValue.toFixed(2) : '-';
                         const row = `<tr>
                             <td><strong>${sub.user_name || sub.user_id}</strong></td>
@@ -501,7 +525,8 @@
                     endedSubsList.innerHTML = '<tr><td colspan="3" class="empty-message">No ended subs yet</td></tr>';
                 } else {
                     endedSubs.slice(0, 100).forEach(sub => {
-                        const tier = sub.tier ? '$' + (parseInt(sub.tier) / 1000 * 2.5).toFixed(2) : '-';
+                        const tierValues = { '1000': 4.19, '2000': 6.99, '3000': 17.49 };
+                        const tier = sub.tier ? '$' + (tierValues[sub.tier] || 0).toFixed(2) : '-';
                         const row = `<tr>
                             <td><strong>${sub.user_name || sub.user_id}</strong></td>
                             <td>${tier}</td>
@@ -519,7 +544,8 @@
                     allSubsList.innerHTML = '<tr><td colspan="4" class="empty-message">No subscribers yet</td></tr>';
                 } else {
                     activeSubs.slice(0, 100).forEach(sub => {
-                        const tier = sub.tier ? '$' + (parseInt(sub.tier) / 1000 * 2.5).toFixed(2) : '-';
+                        const tierValues = { '1000': 4.19, '2000': 6.99, '3000': 17.49 };
+                        const tier = sub.tier ? '$' + (tierValues[sub.tier] || 0).toFixed(2) : '-';
                         const status = sub.status === 'active'
                             ? '<span class="status-active">Active</span>'
                             : '<span class="status-ended">Ended</span>';
@@ -543,6 +569,92 @@
             }
         }
 
+        // Load manual bits from localStorage
+        function loadManualBits() {
+            const stored = localStorage.getItem('manualBitsHistory');
+            if (stored) {
+                const bits = JSON.parse(stored);
+                updateManualBitsList(bits);
+            }
+        }
+
+        // Update the display of manual bits
+        function updateManualBitsList(bits) {
+            const list = document.getElementById('manual-bits-list');
+            if (bits.length === 0) {
+                list.innerHTML = '<p>No manual bits added yet</p>';
+            } else {
+                list.innerHTML = bits.slice(-10).reverse().map(b => 
+                    `<div style="padding: 4px 0; border-bottom: 1px solid #e2e8f0;">
+                        ${new Date(b.timestamp).toLocaleTimeString()} - ${b.username}: ${b.bits} bits ($${(b.bits * 0.01).toFixed(2)})
+                    </div>`
+                ).join('');
+            }
+        }
+
+        // Add manual bits - calls the backend API
+        async function addManualBits() {
+            const username = document.getElementById('bits-username').value.trim();
+            const amount = parseInt(document.getElementById('bits-amount').value);
+            const status = document.getElementById('manual-bits-status');
+
+            if (!username || !amount || amount <= 0) {
+                status.textContent = 'Please enter a username and valid bits amount';
+                status.style.color = '#e53e3e';
+                return;
+            }
+
+            try {
+                // Call the backend API to record bits
+                const response = await fetch('/api/add-bits', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: username, bits: amount })
+                });
+
+                const result = await response.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || 'Failed to add bits');
+                }
+
+                // Store in localStorage for display history
+                const stored = localStorage.getItem('manualBitsHistory');
+                const bits = stored ? JSON.parse(stored) : [];
+                bits.push({
+                    username: username,
+                    bits: amount,
+                    timestamp: new Date().toISOString()
+                });
+                // Keep only last 50 entries
+                if (bits.length > 50) bits.shift();
+                localStorage.setItem('manualBitsHistory', JSON.stringify(bits));
+
+                // Update display
+                updateManualBitsList(bits);
+
+                // Clear inputs
+                document.getElementById('bits-username').value = '';
+                document.getElementById('bits-amount').value = '';
+
+                // Show success with updated totals
+                status.innerHTML = `Added ${amount} bits for ${username}<br>Today: $${result.bits_today?.toFixed(2) || '0.00'} | Lifetime: $${result.bits_total?.toFixed(2) || '0.00'}`;
+                status.style.color = '#38a169';
+
+                // Trigger a stats refresh after a short delay
+                setTimeout(() => {
+                    status.textContent = '';
+                    loadAllData();
+                }, 3000);
+
+            } catch (e) {
+                console.error('Error adding bits:', e);
+                status.textContent = 'Error: ' + e.message;
+                status.style.color = '#e53e3e';
+            }
+        }
+
+        loadManualBits();
         loadAllData();
         setInterval(loadAllData, 30000);
     </script>

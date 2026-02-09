@@ -16,6 +16,7 @@ const DEFAULT_CONFIG = {
         followers: {
             fontSize: 48,
             labelFontSize: 14,
+            labelGap: 5,
             colors: {
                 text: "#9146ff",
                 label: "#aaaaaa",
@@ -40,6 +41,7 @@ const DEFAULT_CONFIG = {
         monthly: {
             fontSize: 42,
             labelFontSize: 14,
+            labelGap: 5,
             colors: {
                 text: "#ff6b6b",
                 label: "#aaaaaa",
@@ -64,6 +66,7 @@ const DEFAULT_CONFIG = {
         lifetime: {
             fontSize: 36,
             labelFontSize: 14,
+            labelGap: 5,
             colors: {
                 text: "#ffd700",
                 label: "#aaaaaa",
@@ -89,6 +92,7 @@ const DEFAULT_CONFIG = {
         bits: {
             fontSize: 42,
             labelFontSize: 14,
+            labelGap: 5,
             colors: {
                 text: "#2ed573",
                 label: "#aaaaaa",
@@ -114,10 +118,36 @@ const DEFAULT_CONFIG = {
         subgoal: {
             fontSize: 42,
             labelFontSize: 14,
+            labelGap: 5,
             colors: {
                 text: "#00d2d3",
                 label: "#aaaaaa",
                 border: "#00d2d3",
+                background: "rgba(0,0,0,0.3)"
+            },
+            border: {
+                width: 2,
+                style: "solid",
+                radius: 0
+            },
+            background: {
+                enabled: false,
+                color: "rgba(0,0,0,0.3)",
+                opacity: 30
+            },
+            padding: {
+                vertical: 8,
+                horizontal: 15
+            }
+        },
+        hours: {
+            fontSize: 42,
+            labelFontSize: 14,
+            labelGap: 5,
+            colors: {
+                text: "#00bcd4",
+                label: "#aaaaaa",
+                border: "#00bcd4",
                 background: "rgba(0,0,0,0.3)"
             },
             border: {
@@ -203,7 +233,7 @@ function applyWidgetStyles() {
     root.style.setProperty('--text-shadow', WIDGET_CONFIG.textShadow);
     root.style.setProperty('--gap', WIDGET_CONFIG.layout.gap + 'px');
     
-    const widgets = ['followers', 'subgoal', 'bits', 'monthly', 'lifetime'];
+    const widgets = ['followers', 'subgoal', 'bits', 'hours', 'monthly', 'lifetime'];
     
     widgets.forEach(widget => {
         const config = WIDGET_CONFIG.widgets[widget];
@@ -213,11 +243,12 @@ function applyWidgetStyles() {
         
         root.style.setProperty(prefix + '-font-size', config.fontSize + 'px');
         root.style.setProperty(prefix + '-label-font-size', config.labelFontSize + 'px');
+        root.style.setProperty(prefix + '-label-gap', (config.labelGap !== undefined ? config.labelGap : 5) + 'px');
         root.style.setProperty(prefix + '-text-color', config.colors.text);
         root.style.setProperty(prefix + '-label-color', config.colors.label);
         root.style.setProperty(prefix + '-border-color', config.colors.border);
         
-        if (config.background.enabled) {
+        if (config.background && config.background.enabled) {
             const bgColor = config.background.color || '#000000';
             // Allow 0 as a valid opacity value, only use default if undefined/null
             const opacity = config.background.opacity === undefined || config.background.opacity === null ? 30 : config.background.opacity;
@@ -237,10 +268,15 @@ function applyWidgetStyles() {
             root.style.setProperty(prefix + '-bg-color', 'transparent');
         }
         
-        root.style.setProperty(prefix + '-border-width', config.border.width + 'px');
-        root.style.setProperty(prefix + '-border-style', config.border.style);
-        root.style.setProperty(prefix + '-border-radius', config.border.radius + 'px');
-        root.style.setProperty(prefix + '-padding', config.padding.vertical + 'px ' + config.padding.horizontal + 'px');
+        root.style.setProperty(prefix + '-border-width', (config.border ? config.border.width : 2) + 'px');
+        root.style.setProperty(prefix + '-border-style', config.border ? config.border.style : 'solid');
+        root.style.setProperty(prefix + '-border-radius', (config.border ? config.border.radius : 0) + 'px');
+        root.style.setProperty(prefix + '-padding', config.padding
+            ? (config.padding.vertical + 'px ' + config.padding.horizontal + 'px')
+            : '8px 15px');
+
+        // Widget-specific text shadow
+        root.style.setProperty(prefix + '-text-shadow', config.textShadow || WIDGET_CONFIG.textShadow || '2px 2px 4px rgba(0,0,0,0.8)');
     });
 
     // Compatibility: older templates use these generic variables.

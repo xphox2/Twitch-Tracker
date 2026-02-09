@@ -413,8 +413,37 @@
         <p class="date-range" id="dateRange">Loading...</p>
     </div>
 
+    <!-- Live Stats Banner -->
+    <div id="liveStatsBanner" class="stats-grid" style="margin-bottom:20px;">
+        <div class="stat-card" style="border-top:3px solid #9146ff;">
+            <div class="stat-value" style="color:#9146ff;font-size:1.8em;" id="liveSubs">--</div>
+            <div class="stat-label">Subscribers</div>
+            <div class="stat-change positive" id="liveSubGoal">--</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #ff6b6b;">
+            <div class="stat-value" style="color:#ff6b6b;font-size:1.8em;" id="liveFollowers">--</div>
+            <div class="stat-label">Followers</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #ffd700;">
+            <div class="stat-value" style="color:#ffd700;font-size:1.8em;" id="liveBitsToday">--</div>
+            <div class="stat-label">Bits Today</div>
+            <div class="stat-change positive" id="liveBitsTotal">--</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #2ed573;">
+            <div class="stat-value" style="color:#2ed573;font-size:1.8em;" id="liveSubsRevToday">--</div>
+            <div class="stat-label">Subs Rev Today</div>
+            <div class="stat-change positive" id="liveSubsRevTotal">--</div>
+        </div>
+        <div class="stat-card" style="border-top:3px solid #00d2d3;">
+            <div class="stat-value" style="color:#00d2d3;font-size:1.8em;" id="liveArtistMonthly">--</div>
+            <div class="stat-label">Artist This Month</div>
+            <div class="stat-change positive" id="liveArtistLifetime">--</div>
+        </div>
+    </div>
+
     <div class="tabs">
         <button class="tab-btn active" data-tab="yearly">Yearly Overview</button>
+        <button class="tab-btn" data-tab="revenue">Revenue</button>
         <button class="tab-btn" data-tab="monthly">Monthly</button>
         <button class="tab-btn" data-tab="weekly">Weekly</button>
         <button class="tab-btn" data-tab="streams">Stream Breakdown</button>
@@ -446,17 +475,17 @@
                     <div class="tier-breakdown">
                         <div class="tier-card tier-1">
                             <div class="tier-value" id="tier1Count">0</div>
-                            <div class="tier-label">Tier 1 ($2.50)</div>
+                            <div class="tier-label">Tier 1 ($4.19)</div>
                             <div class="tier-revenue" id="tier1Revenue">$0.00</div>
                         </div>
                         <div class="tier-card tier-2">
                             <div class="tier-value" id="tier2Count">0</div>
-                            <div class="tier-label">Tier 2 ($5.00)</div>
+                            <div class="tier-label">Tier 2 ($6.99)</div>
                             <div class="tier-revenue" id="tier2Revenue">$0.00</div>
                         </div>
                         <div class="tier-card tier-3">
                             <div class="tier-value" id="tier3Count">0</div>
-                            <div class="tier-label">Tier 3 ($24.99)</div>
+                            <div class="tier-label">Tier 3 ($17.49)</div>
                             <div class="tier-revenue" id="tier3Revenue">$0.00</div>
                         </div>
                     </div>
@@ -494,6 +523,21 @@
                 </div>
             </div>
 
+            <div class="grid-2">
+                <div class="chart-container">
+                    <h3 class="chart-title">Subscriber Growth</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="subGrowthChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <h3 class="chart-title">Follower Growth</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="followerGrowthChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
             <div class="chart-container">
                 <h3 class="chart-title">Monthly Breakdown</h3>
                 <div class="table-container">
@@ -512,6 +556,35 @@
                         <tbody></tbody>
                     </table>
                 </div>
+            </div>
+        </div>
+
+        <!-- Revenue Tab -->
+        <div id="revenue" class="tab-content">
+            <div class="stats-grid" id="revenueStatsGrid"></div>
+            <div class="grid-2">
+                <div class="chart-container">
+                    <h3 class="chart-title">Revenue by Source</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="revenueSourceChart"></canvas>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <h3 class="chart-title">Monthly Revenue Trend</h3>
+                    <div class="chart-wrapper">
+                        <canvas id="revenueMonthlyTrendChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3 class="chart-title">Daily Revenue (Bits + Subs)</h3>
+                <div class="chart-wrapper" style="height:350px;">
+                    <canvas id="revenueDailyStackedChart"></canvas>
+                </div>
+            </div>
+            <div class="chart-container">
+                <h3 class="chart-title">Revenue Projections</h3>
+                <div class="stats-grid" id="revenueProjections"></div>
             </div>
         </div>
 
@@ -619,6 +692,27 @@
     <script>
         let allData = [];
         let yearlyRevenueChart, yearlyTiersChart, monthlyChart, weeklyChart, streamBitsChart, bestDaysChart;
+        let revenueSourceChart, revenueMonthlyTrendChart, revenueDailyStackedChart;
+        let subGrowthChart, followerGrowthChart;
+
+        // ─── Live Stats ─────────────────────────────────────────
+        async function fetchLiveStats() {
+            try {
+                const res = await fetch('/data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' });
+                const s = await res.json();
+                document.getElementById('liveSubs').textContent = (s.subscribers || 0).toLocaleString();
+                document.getElementById('liveFollowers').textContent = (s.followers || 0).toLocaleString();
+                document.getElementById('liveBitsToday').textContent = '$' + (s.bits_today || 0).toFixed(2);
+                document.getElementById('liveBitsTotal').textContent = '$' + (s.bits_total || 0).toFixed(2) + ' lifetime';
+                document.getElementById('liveSubsRevToday').textContent = '$' + (s.subs_today_revenue || 0).toFixed(2);
+                document.getElementById('liveSubsRevTotal').textContent = '$' + (s.subs_total_revenue || 0).toFixed(2) + ' lifetime';
+                document.getElementById('liveArtistMonthly').textContent = '$' + (s.artist_raise_30 || 0).toFixed(2);
+                document.getElementById('liveArtistLifetime').textContent = '$' + (s.artist_yearly || 0).toFixed(2) + ' lifetime';
+                document.getElementById('liveSubGoal').textContent = 'Goal: ' + (s.sub_goal_current || 0) + '/' + (s.sub_goal_target || 150);
+            } catch (e) { /* silent */ }
+        }
+        fetchLiveStats();
+        setInterval(fetchLiveStats, 10000);
 
         function parseCsvLine(line) {
             // Basic CSV parser: handles quoted fields with commas.
@@ -666,53 +760,28 @@
 
         async function loadData() {
             try {
-                const response = await fetch('/data/archive/daily/');
-                const html = await response.text();
-                
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                const links = doc.querySelectorAll('a');
-                
-                allData = [];
-                for (const link of links) {
-                    const href = link.getAttribute('href');
-                    if (href && href.startsWith('stats_archive_') && href.endsWith('.csv')) {
-                        const dateStr = href.replace('stats_archive_', '').replace('.csv', '');
-                        try {
-                            const fileDate = new Date(dateStr);
-                            if (!isNaN(fileDate.getTime())) {
-                                const fileResponse = await fetch('/data/archive/daily/' + href);
-                                const csvText = await fileResponse.text();
-                                const lines = csvText.split(/\r?\n/).filter(row => row.trim());
-                                if (lines.length > 1) {
-                                    const headers = parseCsvLine(lines[0]).map(h => h.trim());
-                                    const values = parseCsvLine(lines[lines.length - 1]);
-                                    const stats = {};
-                                    headers.forEach((header, i) => {
-                                        let value = values[i]?.trim() || '0';
-                                        if (header === 'timestamp') {
-                                            stats[header] = value;
-                                        } else if (header === 'tiers' || header === 'gifted_tiers') {
-                                            stats[header] = parsePythonDictString(value) || {};
-                                        } else {
-                                            stats[header] = parseFloat(value) || 0;
-                                        }
-                                    });
-                                    stats.date = dateStr;
-                                    allData.push(stats);
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('Failed to load:', href);
-                        }
-                    }
+                // Load consolidated JSON for fast loading
+                const response = await fetch('/data/dashboard_data.json?t=' + Date.now(), { cache: 'no-store' });
+
+                if (!response.ok) {
+                    throw new Error('Dashboard data not found. Run: python twitch_stats.py --backfill-archives data/import');
                 }
-                
+
+                allData = await response.json();
+
+                // Ensure data is sorted by date
                 allData.sort((a, b) => new Date(a.date) - new Date(b.date));
+
                 processData();
             } catch (error) {
                 console.error('Error loading data:', error);
-                document.getElementById('loading').innerHTML = '<p>Error loading data. Make sure the tracker is running.</p>';
+                document.getElementById('loading').innerHTML = `
+                    <p>Error loading data: ${error.message}</p>
+                    <p style="margin-top:10px;color:#aaa;">Run this command to generate dashboard data:</p>
+                    <code style="background:rgba(255,255,255,0.1);padding:10px;display:block;margin-top:10px;border-radius:5px;">
+                        python twitch_stats.py --backfill-archives data/import
+                    </code>
+                `;
             }
         }
 
@@ -772,23 +841,33 @@
                     <div class="stat-label">Days Tracked</div>
                     <div class="stat-change positive">365 day retention</div>
                 </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ff6b6b;">$${formatNumber(totals.dailyAvg)}</div>
+                    <div class="stat-label">Daily Avg Revenue</div>
+                    <div class="stat-change positive">$${formatNumber(totals.dailyAvg * 30)}/mo projected</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color: #ffd700;">$${formatNumber(totals.bestDayRev)}</div>
+                    <div class="stat-label">Best Day Revenue</div>
+                    <div class="stat-change positive">${totals.bestDayDate ? formatDate(totals.bestDayDate) : '--'}</div>
+                </div>
             `;
 
             document.getElementById('tier1Count').textContent = formatNumber(totals.tiers['1000'] || 0);
-            document.getElementById('tier1Revenue').textContent = '$' + formatNumber((totals.tiers['1000'] || 0) * 2.50);
+            document.getElementById('tier1Revenue').textContent = '$' + formatNumber((totals.tiers['1000'] || 0) * 4.19);
             document.getElementById('tier2Count').textContent = formatNumber(totals.tiers['2000'] || 0);
-            document.getElementById('tier2Revenue').textContent = '$' + formatNumber((totals.tiers['2000'] || 0) * 5.00);
+            document.getElementById('tier2Revenue').textContent = '$' + formatNumber((totals.tiers['2000'] || 0) * 6.99);
             document.getElementById('tier3Count').textContent = formatNumber(totals.tiers['3000'] || 0);
-            document.getElementById('tier3Revenue').textContent = '$' + formatNumber((totals.tiers['3000'] || 0) * 24.99);
-
+            document.getElementById('tier3Revenue').textContent = '$' + formatNumber((totals.tiers['3000'] || 0) * 17.49);
             document.getElementById('giftedTier1Count').textContent = formatNumber(totals.gifted_tiers?.['1000'] || 0);
-            document.getElementById('giftedTier1Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['1000'] || 0) * 2.50);
+            document.getElementById('giftedTier1Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['1000'] || 0) * 4.19);
             document.getElementById('giftedTier2Count').textContent = formatNumber(totals.gifted_tiers?.['2000'] || 0);
-            document.getElementById('giftedTier2Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['2000'] || 0) * 5.00);
+            document.getElementById('giftedTier2Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['2000'] || 0) * 6.99);
             document.getElementById('giftedTier3Count').textContent = formatNumber(totals.gifted_tiers?.['3000'] || 0);
-            document.getElementById('giftedTier3Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['3000'] || 0) * 24.99);
+            document.getElementById('giftedTier3Revenue').textContent = '$' + formatNumber((totals.gifted_tiers?.['3000'] || 0) * 17.49);
 
             renderYearlyCharts(totals);
+            renderGrowthCharts();
             renderHeatmap();
             renderMonthlyTable();
         }
@@ -831,10 +910,21 @@
             artistThisYear = (bitsThisYear + revenueThisYear) * 0.30;
             artistRaise = (totalBits + totalRevenue) * 0.30;
 
+            // Daily avg and best day
+            let bestDayRev = 0, bestDayDate = '';
+            let totalDailyRev = 0;
+            allData.forEach(d => {
+                const dayRev = (d.bits_today || 0) + (d.subs_today_revenue || 0);
+                totalDailyRev += dayRev;
+                if (dayRev > bestDayRev) { bestDayRev = dayRev; bestDayDate = d.date; }
+            });
+            const dailyAvg = allData.length > 0 ? totalDailyRev / allData.length : 0;
+
             return {
                 totalBits, totalRevenue, artistRaise,
                 bitsThisYear, revenueThisYear, artistThisYear,
-                totalFollowers, totalSubscribers, tiers, gifted_tiers
+                totalFollowers, totalSubscribers, tiers, gifted_tiers,
+                dailyAvg, bestDayRev, bestDayDate
             };
         }
 
@@ -884,7 +974,7 @@
             yearlyTiersChart = new Chart(ctx2, {
                 type: 'doughnut',
                 data: {
-                    labels: ['Tier 1 ($2.50)', 'Tier 2 ($5.00)', 'Tier 3 ($24.99)'],
+                    labels: ['Tier 1 ($4.19)', 'Tier 2 ($6.99)', 'Tier 3 ($17.49)'],
                     datasets: [{
                         data: [totals.tiers['1000'] || 0, totals.tiers['2000'] || 0, totals.tiers['3000'] || 0],
                         backgroundColor: ['#9146ff', '#2ed573', '#ffd700'],
@@ -942,7 +1032,7 @@
                 }
                 monthlyData[month].bits += day.bits_today || 0;
                 monthlyData[month].revenue += day.subs_today_revenue || 0;
-                monthlyData[month].gifted += (day.gifted_tiers?.['1000'] || 0) * 2.50 + (day.gifted_tiers?.['2000'] || 0) * 5.00 + (day.gifted_tiers?.['3000'] || 0) * 24.99;
+                monthlyData[month].gifted += (day.gifted_tiers?.['1000'] || 0) * 4.19 + (day.gifted_tiers?.['2000'] || 0) * 6.99 + (day.gifted_tiers?.['3000'] || 0) * 17.49;
                 monthlyData[month].artist += ((day.bits_today || 0) + (day.subs_today_revenue || 0)) * 0.30;
             });
 
@@ -1178,6 +1268,202 @@
             });
         }
 
+        // ─── Revenue Tab ─────────────────────────────────────
+        function renderRevenueView() {
+            // Source breakdown
+            let totalBitsRev = 0, totalSubsRev = 0, totalGiftedRev = 0;
+            const monthlyRevenue = {};
+            allData.forEach(d => {
+                totalBitsRev += d.bits_today || 0;
+                totalSubsRev += d.subs_today_revenue || 0;
+                // artist_gifted_monthly gives the 30% share, so estimate full gifted revenue
+                const month = d.date.substring(0, 7);
+                if (!monthlyRevenue[month]) monthlyRevenue[month] = { bits: 0, subs: 0, total: 0 };
+                monthlyRevenue[month].bits += d.bits_today || 0;
+                monthlyRevenue[month].subs += d.subs_today_revenue || 0;
+                monthlyRevenue[month].total += (d.bits_today || 0) + (d.subs_today_revenue || 0);
+            });
+            const totalRev = totalBitsRev + totalSubsRev;
+            const daysTracked = allData.length || 1;
+            const dailyAvg = totalRev / daysTracked;
+            const monthlyAvg = dailyAvg * 30;
+            const bestDay = allData.reduce((best, d) => {
+                const dayRev = (d.bits_today || 0) + (d.subs_today_revenue || 0);
+                return dayRev > best.rev ? { rev: dayRev, date: d.date } : best;
+            }, { rev: 0, date: '' });
+
+            document.getElementById('revenueStatsGrid').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#2ed573;">$${formatNumber(totalRev)}</div>
+                    <div class="stat-label">Total Revenue</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#ffd700;">$${formatNumber(totalBitsRev)}</div>
+                    <div class="stat-label">From Bits</div>
+                    <div class="stat-change positive">${totalRev > 0 ? (totalBitsRev/totalRev*100).toFixed(1) : 0}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#9146ff;">$${formatNumber(totalSubsRev)}</div>
+                    <div class="stat-label">From Subs</div>
+                    <div class="stat-change positive">${totalRev > 0 ? (totalSubsRev/totalRev*100).toFixed(1) : 0}%</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#ff6b6b;">$${formatNumber(dailyAvg)}</div>
+                    <div class="stat-label">Daily Average</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#00d2d3;">$${formatNumber(monthlyAvg)}</div>
+                    <div class="stat-label">Monthly Projection</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#ffd700;">$${formatNumber(bestDay.rev)}</div>
+                    <div class="stat-label">Best Day</div>
+                    <div class="stat-change positive">${bestDay.date ? formatDate(bestDay.date) : '--'}</div>
+                </div>
+            `;
+
+            // Projections
+            const last30 = allData.slice(-30);
+            const last30Rev = last30.reduce((s, d) => s + (d.bits_today || 0) + (d.subs_today_revenue || 0), 0);
+            const last30Avg = last30.length > 0 ? last30Rev / last30.length : 0;
+            const last7 = allData.slice(-7);
+            const last7Rev = last7.reduce((s, d) => s + (d.bits_today || 0) + (d.subs_today_revenue || 0), 0);
+            const last7Avg = last7.length > 0 ? last7Rev / last7.length : 0;
+
+            document.getElementById('revenueProjections').innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#2ed573;">$${formatNumber(last7Avg)}</div>
+                    <div class="stat-label">7-Day Avg/Day</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#2ed573;">$${formatNumber(last30Avg)}</div>
+                    <div class="stat-label">30-Day Avg/Day</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#00d2d3;">$${formatNumber(last7Avg * 30)}</div>
+                    <div class="stat-label">Monthly (7-day pace)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#00d2d3;">$${formatNumber(last30Avg * 365)}</div>
+                    <div class="stat-label">Yearly (30-day pace)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" style="color:#ffd700;">$${formatNumber(last7Avg * 365 * 0.30)}</div>
+                    <div class="stat-label">Artist Yearly (7d pace)</div>
+                </div>
+            `;
+
+            // Source doughnut
+            const ctx1 = document.getElementById('revenueSourceChart').getContext('2d');
+            if (revenueSourceChart) revenueSourceChart.destroy();
+            revenueSourceChart = new Chart(ctx1, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Bits Revenue', 'Subscription Revenue'],
+                    datasets: [{ data: [totalBitsRev, totalSubsRev], backgroundColor: ['#ffd700', '#9146ff'], borderWidth: 0 }]
+                },
+                options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#fff' } } } }
+            });
+
+            // Monthly trend bar chart
+            const months = Object.keys(monthlyRevenue).sort();
+            const ctx2 = document.getElementById('revenueMonthlyTrendChart').getContext('2d');
+            if (revenueMonthlyTrendChart) revenueMonthlyTrendChart.destroy();
+            revenueMonthlyTrendChart = new Chart(ctx2, {
+                type: 'bar',
+                data: {
+                    labels: months,
+                    datasets: [
+                        { label: 'Bits', data: months.map(m => monthlyRevenue[m].bits), backgroundColor: 'rgba(255,215,0,0.7)', borderRadius: 5 },
+                        { label: 'Subs', data: months.map(m => monthlyRevenue[m].subs), backgroundColor: 'rgba(145,70,255,0.7)', borderRadius: 5 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { stacked: true, ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { stacked: true, ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+
+            // Daily stacked area
+            const ctx3 = document.getElementById('revenueDailyStackedChart').getContext('2d');
+            if (revenueDailyStackedChart) revenueDailyStackedChart.destroy();
+            revenueDailyStackedChart = new Chart(ctx3, {
+                type: 'line',
+                data: {
+                    labels: allData.map(d => d.date),
+                    datasets: [
+                        { label: 'Bits', data: allData.map(d => d.bits_today || 0), borderColor: '#ffd700', backgroundColor: 'rgba(255,215,0,0.15)', fill: true, tension: 0.3, pointRadius: 0 },
+                        { label: 'Subs', data: allData.map(d => d.subs_today_revenue || 0), borderColor: '#9146ff', backgroundColor: 'rgba(145,70,255,0.15)', fill: true, tension: 0.3, pointRadius: 0 }
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { ticks: { color: '#aaa', maxTicksLimit: 15 }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { stacked: true, ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+        }
+
+        // ─── Subscriber & Follower Growth Charts ─────────────
+        function renderGrowthCharts() {
+            // Sub growth over time
+            const ctx1 = document.getElementById('subGrowthChart').getContext('2d');
+            if (subGrowthChart) subGrowthChart.destroy();
+            subGrowthChart = new Chart(ctx1, {
+                type: 'line',
+                data: {
+                    labels: allData.map(d => d.date),
+                    datasets: [{
+                        label: 'Subscribers',
+                        data: allData.map(d => d.subscribers || 0),
+                        borderColor: '#9146ff',
+                        backgroundColor: 'rgba(145,70,255,0.1)',
+                        fill: true, tension: 0.4, pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { ticks: { color: '#aaa', maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+
+            // Follower growth over time
+            const ctx2 = document.getElementById('followerGrowthChart').getContext('2d');
+            if (followerGrowthChart) followerGrowthChart.destroy();
+            followerGrowthChart = new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels: allData.map(d => d.date),
+                    datasets: [{
+                        label: 'Followers',
+                        data: allData.map(d => d.followers || 0),
+                        borderColor: '#ff6b6b',
+                        backgroundColor: 'rgba(255,107,107,0.1)',
+                        fill: true, tension: 0.4, pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#fff' } } },
+                    scales: {
+                        x: { ticks: { color: '#aaa', maxTicksLimit: 12 }, grid: { color: 'rgba(255,255,255,0.1)' } },
+                        y: { ticks: { color: '#aaa' }, grid: { color: 'rgba(255,255,255,0.1)' } }
+                    }
+                }
+            });
+        }
+
         function formatNumber(num) {
             if (num == null || num === '') return '0';
             if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -1193,6 +1479,7 @@
                     btn.classList.add('active');
                     document.getElementById(btn.dataset.tab).classList.add('active');
 
+                    if (btn.dataset.tab === 'revenue') renderRevenueView();
                     if (btn.dataset.tab === 'monthly') renderMonthlyView(currentMonthDate);
                     if (btn.dataset.tab === 'weekly') renderWeeklyView(currentWeekStart);
                     if (btn.dataset.tab === 'streams') renderStreamsView();

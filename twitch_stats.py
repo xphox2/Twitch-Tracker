@@ -35,6 +35,7 @@ SUBSCRIBERS_FILE = os.path.join(DATA_DIR, "subscribers.json")
 SUB_REVENUE_FILE = os.path.join(DATA_DIR, "sub_revenue.json")
 SUB_GOAL_FILE = os.path.join(DATA_DIR, "sub_goal.json")
 BRANDING_CONFIG_FILE = os.path.join(DATA_DIR, "branding.json")
+HOURS_STREAMED_FILE = os.path.join(DATA_DIR, "hours_streamed.json")
 ARCHIVE_RETENTION_DAYS = 365
 
 BITS_VALUE_USD_PER_BIT = 0.01
@@ -51,15 +52,81 @@ CHEERMOTE_CACHE = {
 }
 
 # Background threads update bits + artist earnings; protect file updates.
-BITS_TRACK_LOCK = threading.Lock()
+# RLock so record_cheer/record_bits_spend can hold the lock across the full
+# load-modify-save cycle while the inner helpers also acquire it.
+BITS_TRACK_LOCK = threading.RLock()
 ARTIST_EARNINGS_LOCK = threading.Lock()
 SUB_REVENUE_LOCK = threading.RLock()
 SUB_GOAL_LOCK = threading.RLock()
+HOURS_STREAMED_LOCK = threading.Lock()
+
+# Session tracking for hours streamed
+SESSION_START_TIME = None
+
+# Cross-event bits deduplication: prevents counting bits twice when Twitch sends
+# multiple events (e.g., PRIVMSG with bits + USERNOTICE onetapgiftredeemed).
+# Key: (username_lower, bits_amount), Value: timestamp
+BITS_EVENT_DEDUP_LOCK = threading.Lock()
+BITS_EVENT_DEDUP = {}
+BITS_EVENT_DEDUP_WINDOW_SECONDS = 3
+
+def should_skip_bits_due_to_recent_global(username, bits_count, update_cache=True):
+    """Check if we should skip recording bits due to recent duplicate event.
+    
+    This is used to prevent double-counting when Twitch sends multiple IRC messages
+    for the same cheer event (e.g., both a PRIVMSG with bits and a USERNOTICE).
+    
+    Args:
+        username: The username to check
+        bits_count: The amount of bits
+        update_cache: If True, updates the cache timestamp (call when actually recording bits)
+                     If False, only checks without updating (call when checking for duplicates)
+    """
+    if not username or bits_count <= 0:
+        return False
+    
+    username_lower = str(username).lower()
+    key = (username_lower, int(bits_count))
+    now = time.time()
+    
+    with BITS_EVENT_DEDUP_LOCK:
+        last_time = BITS_EVENT_DEDUP.get(key)
+        if last_time and (now - last_time) < BITS_EVENT_DEDUP_WINDOW_SECONDS:
+            return True
+        
+        # Only update cache if we're actually going to record this
+        if update_cache:
+            BITS_EVENT_DEDUP[key] = now
+            
+            # Cleanup old entries periodically
+            if len(BITS_EVENT_DEDUP) > 1000:
+                cutoff = now - BITS_EVENT_DEDUP_WINDOW_SECONDS
+                old_keys = [k for k, v in BITS_EVENT_DEDUP.items() if v < cutoff]
+                for k in old_keys:
+                    del BITS_EVENT_DEDUP[k]
+    
+    return False
+
+
+def record_bits_event_in_cache(username, bits_count):
+    """Record that we processed bits for a user to prevent duplicates.
+    
+    Call this AFTER successfully recording bits to mark them in the cache.
+    """
+    if not username or bits_count <= 0:
+        return
+    
+    username_lower = str(username).lower()
+    key = (username_lower, int(bits_count))
+    now = time.time()
+    
+    with BITS_EVENT_DEDUP_LOCK:
+        BITS_EVENT_DEDUP[key] = now
 
 TIER_VALUES = {
-    "1000": 2.50,
-    "2000": 5.00,
-    "3000": 24.99
+    "1000": 4.19,   # Tier 1: $5.99 USD viewer → Partner 70/30 with Twitch → You get $4.19, Artist gets $1.26 (30% of $4.19)
+    "2000": 6.99,   # Tier 2: $9.99 USD viewer → Partner 70/30 with Twitch → You get $6.99, Artist gets $2.10 (30% of $6.99)
+    "3000": 17.49,  # Tier 3: $24.99 USD viewer → Partner 70/30 with Twitch → You get $17.49, Artist gets $5.25 (30% of $17.49)
 }
 
 # Stable archive schema (avoid CSV header drift when stats keys change).
@@ -84,7 +151,9 @@ ARCHIVE_FIELDS = [
 # Notes:
 # - Followers endpoint uses moderator:read:followers
 # - Bits are tracked via IRC (requires chat:read)
-SCOPES = ["channel:read:subscriptions", "moderator:read:followers", "chat:read"]
+# - EventSub bits tracking requires bits:read scope
+# - EventSub channel point redemption tracking requires channel:read:redemptions
+SCOPES = ["channel:read:subscriptions", "moderator:read:followers", "chat:read", "bits:read", "channel:read:redemptions"]
 
 def get_oauth_url(client_id, redirect_uri):
     params = {
@@ -492,6 +561,94 @@ def save_sub_goal(data):
             json.dump(data, f, indent=2)
         os.replace(tmp_path, SUB_GOAL_FILE)
 
+def load_hours_streamed():
+    """Load hours streamed data from file."""
+    with HOURS_STREAMED_LOCK:
+        return _safe_load_json(HOURS_STREAMED_FILE, {
+            "total_hours": 0.0,
+            "monthly_hours": {},
+            "daily_hours": {},
+            "session_start": None,
+            "last_update": None
+        })
+
+def save_hours_streamed(data):
+    """Save hours streamed data to file."""
+    with HOURS_STREAMED_LOCK:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        tmp_path = HOURS_STREAMED_FILE + ".tmp"
+        with open(tmp_path, 'w') as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, HOURS_STREAMED_FILE)
+
+def start_stream_session():
+    """Mark the start of a streaming session."""
+    global SESSION_START_TIME
+    SESSION_START_TIME = time.time()
+
+    data = load_hours_streamed()
+    data["session_start"] = datetime.now().isoformat()
+    save_hours_streamed(data)
+    print(f"  Stream session started at {data['session_start']}")
+
+def update_hours_streamed():
+    """Update hours streamed based on current session duration."""
+    global SESSION_START_TIME
+
+    if SESSION_START_TIME is None:
+        return load_hours_streamed()
+
+    now = time.time()
+    session_duration_hours = (now - SESSION_START_TIME) / 3600.0
+
+    data = load_hours_streamed()
+
+    # Get current date and month keys
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_month = datetime.now().strftime("%Y-%m")
+
+    # Initialize if needed
+    if "daily_hours" not in data:
+        data["daily_hours"] = {}
+    if "monthly_hours" not in data:
+        data["monthly_hours"] = {}
+
+    # Calculate hours since last update
+    last_update = data.get("last_update")
+    if last_update:
+        try:
+            last_update_time = datetime.fromisoformat(last_update)
+            # Only count hours from this session
+            hours_since_last = (datetime.now() - last_update_time).total_seconds() / 3600.0
+            hours_to_add = min(hours_since_last, 0.1)  # Cap at poll interval worth of hours
+        except Exception:
+            hours_to_add = 0
+    else:
+        hours_to_add = 0
+
+    # Update totals
+    data["total_hours"] = round(float(data.get("total_hours", 0)) + hours_to_add, 2)
+    data["daily_hours"][current_date] = round(float(data["daily_hours"].get(current_date, 0)) + hours_to_add, 2)
+    data["monthly_hours"][current_month] = round(float(data["monthly_hours"].get(current_month, 0)) + hours_to_add, 2)
+    data["last_update"] = datetime.now().isoformat()
+    data["current_session_hours"] = round(session_duration_hours, 2)
+
+    save_hours_streamed(data)
+    return data
+
+def get_hours_streamed():
+    """Get current hours streamed stats."""
+    data = load_hours_streamed()
+    current_month = datetime.now().strftime("%Y-%m")
+    current_date = datetime.now().strftime("%Y-%m-%d")
+
+    return {
+        "total_hours": round(float(data.get("total_hours", 0)), 2),
+        "monthly_hours": round(float(data.get("monthly_hours", {}).get(current_month, 0)), 2),
+        "today_hours": round(float(data.get("daily_hours", {}).get(current_date, 0)), 2),
+        "current_session_hours": round(float(data.get("current_session_hours", 0)), 2)
+    }
+
 def increment_sub_goal(count=1):
     """Increment the subscriber goal counter (never decreases).
 
@@ -688,17 +845,20 @@ def record_cheer(bits_count):
 
     revenue = bits_count * BITS_VALUE_USD_PER_BIT
 
-    data = load_bits_tracker()
-    data["today_bits_count"] = int(data.get("today_bits_count", 0) or 0) + bits_count
-    data["today_bits_revenue"] = round(float(data.get("today_bits_revenue", 0.0) or 0.0) + revenue, 2)
-    data["lifetime_bits_count"] = int(data.get("lifetime_bits_count", 0) or 0) + bits_count
-    data["lifetime_bits_revenue_tracked"] = round(float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0) + revenue, 2)
-    data["lifetime_bits_revenue"] = round(
-        float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
-        + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
-        2,
-    )
-    save_bits_tracker(data)
+    # Hold the lock for the full load-modify-save to prevent concurrent
+    # calls (IRC + EventSub threads) from overwriting each other's updates.
+    with BITS_TRACK_LOCK:
+        data = load_bits_tracker()
+        data["today_bits_count"] = int(data.get("today_bits_count", 0) or 0) + bits_count
+        data["today_bits_revenue"] = round(float(data.get("today_bits_revenue", 0.0) or 0.0) + revenue, 2)
+        data["lifetime_bits_count"] = int(data.get("lifetime_bits_count", 0) or 0) + bits_count
+        data["lifetime_bits_revenue_tracked"] = round(float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0) + revenue, 2)
+        data["lifetime_bits_revenue"] = round(
+            float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+            + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+            2,
+        )
+        save_bits_tracker(data)
 
     # Update the artist fund in real-time for bits revenue.
     try:
@@ -712,10 +872,16 @@ def record_cheer(bits_count):
         bits_label = f"{bits_count} bits"
     print(f"  + Cheer detected: {bits_label} (${revenue:.2f})")
 
-def record_bits_spend(bits_count, label):
+def record_bits_spend(bits_count, label, username=None, skip_duplicate_check=False):
     """Record Bits that were spent (not necessarily a Cheer).
 
     Updates the Bits tracker + artist earnings just like a cheer.
+    
+    Args:
+        bits_count: Number of bits spent
+        label: Description of the spend (e.g., "One-Tap Gift")
+        username: Optional username for deduplication (prevents double-counting)
+        skip_duplicate_check: If True, skip the duplicate check (use when already checked)
     """
     try:
         bits_count = int(bits_count)
@@ -724,19 +890,32 @@ def record_bits_spend(bits_count, label):
     if bits_count <= 0:
         return
 
+    # Check for duplicate events if username provided and not already checked
+    if username and not skip_duplicate_check:
+        if should_skip_bits_due_to_recent_global(username, bits_count, update_cache=False):
+            print(f"  + {label} skipped (duplicate for {username}: {bits_count} bits)")
+            return
+    
+    # Record this bits event in cache to prevent duplicates
+    if username:
+        record_bits_event_in_cache(username, bits_count)
+
     revenue = bits_count * BITS_VALUE_USD_PER_BIT
 
-    data = load_bits_tracker()
-    data["today_bits_count"] = int(data.get("today_bits_count", 0) or 0) + bits_count
-    data["today_bits_revenue"] = round(float(data.get("today_bits_revenue", 0.0) or 0.0) + revenue, 2)
-    data["lifetime_bits_count"] = int(data.get("lifetime_bits_count", 0) or 0) + bits_count
-    data["lifetime_bits_revenue_tracked"] = round(float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0) + revenue, 2)
-    data["lifetime_bits_revenue"] = round(
-        float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
-        + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
-        2,
-    )
-    save_bits_tracker(data)
+    # Hold the lock for the full load-modify-save to prevent concurrent
+    # calls from overwriting each other's updates.
+    with BITS_TRACK_LOCK:
+        data = load_bits_tracker()
+        data["today_bits_count"] = int(data.get("today_bits_count", 0) or 0) + bits_count
+        data["today_bits_revenue"] = round(float(data.get("today_bits_revenue", 0.0) or 0.0) + revenue, 2)
+        data["lifetime_bits_count"] = int(data.get("lifetime_bits_count", 0) or 0) + bits_count
+        data["lifetime_bits_revenue_tracked"] = round(float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0) + revenue, 2)
+        data["lifetime_bits_revenue"] = round(
+            float(data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
+            + float(data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+            2,
+        )
+        save_bits_tracker(data)
 
     try:
         update_artist_earnings(revenue * 0.30, 0.0, 0.0)
@@ -800,13 +979,23 @@ def record_sub_event_from_irc(tags):
                 return
 
         # One-tap gift redemptions: treat as Bits spend (not subscription revenue).
-        # Still counts as a goal increment (a gifted sub was redeemed).
+        # Only increment goal and record bits if this isn't a duplicate event.
         if msg_id == "onetapgiftredeemed":
-            try:
-                increment_sub_goal(1)
-            except Exception:
-                pass
-            record_bits_spend(int(ONE_TAP_GIFT_BITS_COST), "One-Tap Gift")
+            # Get username for deduplication (prevents double-counting when Twitch
+            # sends both a PRIVMSG with bits and this USERNOTICE)
+            username = str(tags.get("display-name") or tags.get("login") or tags.get("msg-param-recipient-user-name") or "")
+            
+            # Check if we already recorded bits for this user recently (without updating cache)
+            # If so, skip both the goal increment and bits recording
+            if not should_skip_bits_due_to_recent_global(username, ONE_TAP_GIFT_BITS_COST, update_cache=False):
+                try:
+                    increment_sub_goal(1)
+                except Exception:
+                    pass
+                # Pass skip_duplicate_check=True since we already checked above
+                record_bits_spend(int(ONE_TAP_GIFT_BITS_COST), "One-Tap Gift", username, skip_duplicate_check=True)
+            else:
+                print(f"  + One-Tap Gift skipped (duplicate for {username})")
             return
 
         tier = _normalize_sub_plan_to_tier(tags.get("msg-param-sub-plan"))
@@ -987,6 +1176,10 @@ def start_bits_irc_listener(config):
         seen_order = []
         max_seen = 5000
 
+        # Note: Cross-event deduplication is now handled globally via
+        # should_skip_bits_due_to_recent_global() to prevent double-counting
+        # when Twitch sends multiple events for the same cheer.
+
         while True:
             s = None
             try:
@@ -1130,14 +1323,58 @@ def start_bits_irc_listener(config):
                                 record_sub_event_from_irc(tags)
 
                             # Bits cheers (and fallback parsing for cheermote tokens).
+                            # IMPORTANT: Use message ID deduplication to prevent double-counting
+                            # when both the bits tag and text parsing match the same cheer.
+                            # ALSO: Cross-event deduplication for username+amount within time window.
+                            bits_recorded = False
+                            cheer_username = str(tags.get("display-name") or tags.get("login") or "").lower()
                             if bits:
-                                record_cheer(bits)
+                                irc_id = tags.get("id")
+                                if irc_id:
+                                    if irc_id in seen_msg_ids:
+                                        continue
+                                    seen_msg_ids.add(irc_id)
+                                    seen_order.append(irc_id)
+                                    if len(seen_order) > max_seen:
+                                        old = seen_order.pop(0)
+                                        try:
+                                            seen_msg_ids.remove(old)
+                                        except KeyError:
+                                            pass
+                                try:
+                                    bits_count = int(bits)
+                                    if not should_skip_bits_due_to_recent_global(cheer_username, bits_count):
+                                        record_cheer(bits_count)
+                                        bits_recorded = True
+                                    else:
+                                        if debug_irc:
+                                            print(f"IRC DEBUG: skipping duplicate bits event for {cheer_username}: {bits_count} bits (within {BITS_EVENT_DEDUP_WINDOW_SECONDS}s window)")
+                                except Exception:
+                                    record_cheer(bits)
+                                    bits_recorded = True
                             else:
                                 parsed = _parse_cheermote_bits_from_text(_extract_privmsg_text(rest), cheer_prefixes)
                                 if parsed > 0:
-                                    if debug_irc:
-                                        print("IRC DEBUG: parsed cheermote bits=" + str(parsed))
-                                    record_cheer(parsed)
+                                    irc_id = tags.get("id")
+                                    if irc_id:
+                                        if irc_id in seen_msg_ids:
+                                            continue
+                                        seen_msg_ids.add(irc_id)
+                                        seen_order.append(irc_id)
+                                        if len(seen_order) > max_seen:
+                                            old = seen_order.pop(0)
+                                            try:
+                                                seen_msg_ids.remove(old)
+                                            except KeyError:
+                                                pass
+                                    if not should_skip_bits_due_to_recent_global(cheer_username, parsed):
+                                        if debug_irc:
+                                            print("IRC DEBUG: parsed cheermote bits=" + str(parsed))
+                                        record_cheer(parsed)
+                                        bits_recorded = True
+                                    else:
+                                        if debug_irc:
+                                            print(f"IRC DEBUG: skipping duplicate cheermote bits for {cheer_username}: {parsed} bits (within {BITS_EVENT_DEDUP_WINDOW_SECONDS}s window)")
                                 elif debug_irc:
                                     # Helpful when Twitch UI shows a cheer but the IRC message
                                     # didn't include bits= (or we failed to parse it).
@@ -1147,6 +1384,7 @@ def start_bits_irc_listener(config):
                         else:
                             # Some messages may arrive without tags. As a last resort,
                             # attempt to parse cheermote tokens from the message body.
+                            # These messages have no ID, so we can't deduplicate them.
                             if " PRIVMSG " in msg and " :" in msg:
                                 parsed = _parse_cheermote_bits_from_text(_extract_privmsg_text(msg), cheer_prefixes)
                                 if parsed > 0:
@@ -1167,6 +1405,344 @@ def start_bits_irc_listener(config):
     t = threading.Thread(target=run, daemon=True)
     t.start()
 
+def start_eventsub_websocket_listener(config):
+    """Background listener that tracks bits via EventSub WebSocket.
+
+    This catches ALL bits events including small cheermotes (1-99 bits)
+    that don't appear in IRC chat.
+
+    Requires: pip install websocket-client
+    """
+    try:
+        import websocket
+    except ImportError:
+        print("INFO: EventSub WebSocket not available (install: pip install websocket-client)")
+        return
+
+    token = (config or {}).get("access_token")
+    client_id = (config or {}).get("client_id")
+    broadcaster_id = (config or {}).get("broadcaster_id")
+    debug_eventsub = bool((config or {}).get("debug_eventsub", False))
+
+    if not token or not client_id or not broadcaster_id:
+        print("WARNING: EventSub WebSocket disabled (missing credentials).")
+        return
+
+    def run():
+        backoff = 2
+        session_id = None
+        reconnect_url = None
+        subscribed = False
+
+        processed_events = set()
+
+        def on_message(ws, message):
+            nonlocal session_id, reconnect_url, subscribed
+            try:
+                data = json.loads(message)
+                msg_type = data.get("metadata", {}).get("message_type")
+                message_id = data.get("metadata", {}).get("message_id", "")
+
+                if debug_eventsub:
+                    print(f"EventSub DEBUG: msg_type={msg_type}, msg_id={message_id[:16] if message_id else 'none'}")
+
+                if msg_type == "session_welcome":
+                    session_id = data["payload"]["session"]["id"]
+                    if debug_eventsub:
+                        print(f"EventSub DEBUG: session_welcome, session_id={session_id[:16]}")
+                    print(f"EventSub WebSocket connected, session: {session_id[:8]}...")
+
+                    # Subscribe to channel.bits.use — catches ALL bits usage:
+                    # cheers, power-ups, combos, animated cheermotes (heart/dino).
+                    subscribe_to_bits_use(token, client_id, broadcaster_id, session_id)
+                    # Subscribe to channel.cheer as a fallback for older Twitch behavior
+                    subscribe_to_cheer(token, client_id, broadcaster_id, session_id)
+                    # Subscribe to channel point redemption events
+                    subscribe_to_channel_points(token, client_id, broadcaster_id, session_id)
+
+                elif msg_type == "session_reconnect":
+                    reconnect_url = data["payload"]["session"]["connection_url"]
+                    subscribed = False  # Need to resubscribe after reconnect
+                    if debug_eventsub:
+                        print(f"EventSub DEBUG: session_reconnect, url={reconnect_url[:50]}...")
+                    ws.close()
+
+                elif msg_type == "session_keepalive":
+                    pass
+
+                elif msg_type == "notification":
+                    subscription_type = data["metadata"]["subscription_type"]
+
+                    if debug_eventsub:
+                        print(f"EventSub DEBUG: notification received - type={subscription_type}")
+                        print(f"EventSub DEBUG: full event data={json.dumps(data, indent=2)[:800]}")
+
+                    event_id = message_id
+
+                    if event_id in processed_events:
+                        if debug_eventsub:
+                            print(f"EventSub DEBUG: skipping duplicate event {event_id[:16]}")
+                        return
+                    processed_events.add(event_id)
+
+                    if len(processed_events) > 1000:
+                        processed_events.clear()
+
+                    if subscription_type == "channel.bits.use":
+                        # New all-purpose bits event: covers cheers, power-ups,
+                        # combos, and animated cheermotes (heart/dino tray items).
+                        event = data["payload"]["event"]
+                        user_name = event.get("user_name", "Anonymous")
+                        bits = event.get("bits", 0)
+                        bits_type = event.get("type", "unknown")  # "cheer", "power_up", "combo", etc.
+
+                        if debug_eventsub:
+                            print(f"EventSub DEBUG: bits.use from {user_name}, bits={bits}, type={bits_type}, id={event_id[:16]}")
+
+                        if bits > 0:
+                            # Cross-event dedup: skip if IRC or channel.cheer already recorded this.
+                            if should_skip_bits_due_to_recent_global(user_name, bits):
+                                if debug_eventsub:
+                                    print(f"EventSub DEBUG: skipping duplicate bits.use for {user_name}: {bits} bits (already recorded)")
+                            else:
+                                record_cheer(bits)
+                                label = {"cheer": "cheer", "power_up": "power-up", "combo": "combo"}.get(bits_type, bits_type)
+                                print(f"  + EventSub: {user_name} used {bits} bits ({label})")
+
+                    elif subscription_type == "channel.cheer":
+                        event = data["payload"]["event"]
+                        user_name = event.get("user_name", "Anonymous")
+                        bits = event.get("bits", 0)
+
+                        if debug_eventsub:
+                            print(f"EventSub DEBUG: cheer event from {user_name}, bits={bits}, id={event_id[:16]}")
+
+                        if bits > 0:
+                            # Cross-event dedup: skip if bits.use or IRC already recorded this.
+                            if should_skip_bits_due_to_recent_global(user_name, bits):
+                                if debug_eventsub:
+                                    print(f"EventSub DEBUG: skipping duplicate cheer for {user_name}: {bits} bits (already recorded)")
+                            else:
+                                record_cheer(bits)
+                                print(f"  + EventSub: {user_name} cheered {bits} bits")
+
+                    elif subscription_type == "channel.channel_points_custom_reward_redemption.add":
+                        event = data["payload"]["event"]
+                        user_name = event.get("user_name", "Anonymous")
+                        reward = event.get("reward", {})
+                        reward_title = reward.get("title", "Unknown Reward")
+
+                        if debug_eventsub:
+                            print(f"EventSub DEBUG: point redemption from {user_name}, title={reward_title}")
+
+                        bits_cost = event.get("bits_cost", 0) or 0
+                        if bits_cost > 0:
+                            record_bits_spend(bits_cost, f"Channel Point Reward: {reward_title}", user_name)
+                            print(f"  + EventSub: {user_name} redeemed '{reward_title}' for {bits_cost} bits")
+
+            except Exception as e:
+                print(f"EventSub error: {e}")
+                if debug_eventsub:
+                    import traceback
+                    traceback.print_exc()
+
+        def on_error(ws, error):
+            print(f"EventSub WebSocket error: {error}")
+
+        def on_close(ws, close_status_code, close_msg):
+            subscribed = False
+            print(f"EventSub WebSocket closed (code={close_status_code}), reconnecting in {backoff}s...")
+
+        def on_open(ws):
+            print("EventSub WebSocket connection opened")
+
+        while True:
+            try:
+                if reconnect_url:
+                    ws_url = reconnect_url
+                    reconnect_url = None
+                    if debug_eventsub:
+                        print(f"EventSub: Using reconnect URL")
+                else:
+                    ws_url = "wss://eventsub.wss.twitch.tv/ws"
+
+                if debug_eventsub:
+                    print(f"EventSub: Connecting to {ws_url}...")
+
+                ws = websocket.WebSocketApp(
+                    ws_url,
+                    on_open=on_open,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close
+                )
+                ws.run_forever()
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+            except Exception as e:
+                print(f"EventSub listener error: {e}")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+
+    def subscribe_to_bits_use(token, client_id, broadcaster_id, session_id):
+        """Subscribe to channel.bits.use events via EventSub.
+
+        This is the new all-purpose bits event that fires for ALL bits usage:
+        cheers, power-ups, combos, and animated cheermotes (heart/dino tray items).
+        """
+        url = "https://api.twitch.tv/helix/eventsub/subscriptions"
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "type": "channel.bits.use",
+            "version": "1",
+            "condition": {
+                "broadcaster_user_id": broadcaster_id
+            },
+            "transport": {
+                "method": "websocket",
+                "session_id": session_id
+            }
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            if response.status_code == 202:
+                print("  + EventSub: Subscribed to channel.bits.use events (all bits usage)")
+            elif response.status_code == 409:
+                print("  + EventSub: Already subscribed to channel.bits.use")
+            else:
+                print(f"EventSub: bits.use subscription response {response.status_code}")
+                if debug_eventsub:
+                    print(f"Response: {response.text[:500]}")
+        except Exception as e:
+            print(f"  - EventSub: Error subscribing to bits.use: {e}")
+
+    def subscribe_to_cheer(token, client_id, broadcaster_id, session_id):
+        """Subscribe to channel.cheer events via EventSub (fallback)."""
+        url = "https://api.twitch.tv/helix/eventsub/subscriptions"
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "type": "channel.cheer",
+            "version": "1",
+            "condition": {
+                "broadcaster_user_id": broadcaster_id
+            },
+            "transport": {
+                "method": "websocket",
+                "session_id": session_id
+            }
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            if response.status_code == 202:
+                print("  + EventSub: Subscribed to channel.cheer events")
+            elif response.status_code == 409:
+                print("  + EventSub: Already subscribed to channel.cheer")
+            else:
+                print(f"EventSub: Subscribe response {response.status_code}")
+                if debug_eventsub:
+                    print(f"Response: {response.text[:500]}")
+        except Exception as e:
+            print(f"  - EventSub: Error subscribing to cheer: {e}")
+
+    def subscribe_to_channel_points(token, client_id, broadcaster_id, session_id):
+        """Subscribe to channel point redemption events via EventSub."""
+        url = "https://api.twitch.tv/helix/eventsub/subscriptions"
+        headers = {
+            "Client-ID": client_id,
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "type": "channel.channel_points_custom_reward_redemption.add",
+            "version": "1",
+            "condition": {
+                "broadcaster_user_id": broadcaster_id
+            },
+            "transport": {
+                "method": "websocket",
+                "session_id": session_id
+            }
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=10)
+            if response.status_code == 202:
+                print("  + EventSub: Subscribed to channel point redemption events")
+            elif response.status_code == 409:
+                print("  + EventSub: Already subscribed to channel point redemptions")
+            else:
+                print(f"EventSub: Points subscription response {response.status_code}")
+                if debug_eventsub:
+                    print(f"Response: {response.text[:500]}")
+        except Exception as e:
+            print(f"  - EventSub: Error subscribing to channel points: {e}")
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+
+def list_eventsub_subscriptions(config):
+    """List all EventSub subscriptions for debugging."""
+    token = config.get("access_token")
+    client_id = config.get("client_id")
+
+    url = "https://api.twitch.tv/helix/eventsub/subscriptions"
+    headers = {
+        "Client-ID": client_id,
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            subs = data.get("data", [])
+            print(f"EventSub Subscriptions ({len(subs)} total):")
+            for sub in subs:
+                sub_type = sub.get("type", "unknown")
+                status = sub.get("status", "unknown")
+                sub_id = sub.get("id", "")
+                condition = sub.get("condition", {})
+                transport = sub.get("transport", {})
+                print(f"  - {sub_type}: {status} (id={sub_id})")
+                if sub_type == "channel.cheer":
+                    print(f"    Condition: {condition}")
+                elif sub_type == "channel.channel_points_custom_reward_redemption.add":
+                    print(f"    Condition: {condition}")
+        else:
+            print(f"Error: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Error listing subscriptions: {e}")
+
+def delete_eventsub_subscription(config, subscription_id):
+    """Delete an EventSub subscription by ID."""
+    token = config.get("access_token")
+    client_id = config.get("client_id")
+
+    url = f"https://api.twitch.tv/helix/eventsub/subscriptions?id={subscription_id}"
+    headers = {
+        "Client-ID": client_id,
+        "Authorization": f"Bearer {token}"
+    }
+
+    try:
+        response = requests.delete(url, headers=headers, timeout=10)
+        if response.status_code in (204, 200):
+            print(f"Deleted subscription {subscription_id}")
+        else:
+            print(f"Error deleting: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Error deleting subscription: {e}")
+
 def calculate_earnings(bits, donations):
     total_revenue = bits + donations
     creator_earnings = total_revenue * 0.70
@@ -1174,10 +1750,7 @@ def calculate_earnings(bits, donations):
     return creator_earnings, artist_raise
 
 def load_artist_earnings():
-    if os.path.exists(ARTIST_EARNINGS_FILE):
-        with open(ARTIST_EARNINGS_FILE, 'r') as f:
-            return json.load(f)
-    return {"monthly_bits": {}, "monthly_subs": {}, "monthly_gifted": {}, "lifetime_bits": 0, "lifetime_subs": 0, "lifetime_gifted": 0, "lifetime_total": 0}
+    return _safe_load_json(ARTIST_EARNINGS_FILE, {"monthly_bits": {}, "monthly_subs": {}, "monthly_gifted": {}, "lifetime_bits": 0, "lifetime_subs": 0, "lifetime_gifted": 0, "lifetime_total": 0})
 
 def save_artist_earnings(data):
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -1187,15 +1760,14 @@ def save_artist_earnings(data):
     os.replace(tmp_path, ARTIST_EARNINGS_FILE)
 
 def load_daily_bits():
-    if os.path.exists(DAILY_BITS_FILE):
-        with open(DAILY_BITS_FILE, 'r') as f:
-            return json.load(f)
-    return {"date": None, "bits": 0, "total_bits": 0}
+    return _safe_load_json(DAILY_BITS_FILE, {"date": None, "bits": 0, "total_bits": 0})
 
 def save_daily_bits(data):
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(DAILY_BITS_FILE, 'w') as f:
+    tmp_path = DAILY_BITS_FILE + ".tmp"
+    with open(tmp_path, 'w') as f:
         json.dump(data, f, indent=2)
+    os.replace(tmp_path, DAILY_BITS_FILE)
 
 def get_current_date_key():
     return datetime.now().strftime("%Y-%m-%d")
@@ -1385,6 +1957,10 @@ def fetch_all_stats(config):
     sub_goal_current = int(goal_data.get("current", 0) or 0)
     sub_goal_target = int(goal_data.get("goal", 150) or 150)
 
+    # Update and get hours streamed
+    hours_data = update_hours_streamed()
+    hours_stats = get_hours_streamed()
+
     return {
         "timestamp": datetime.now().isoformat(),
         "subscribers": subscribers,
@@ -1402,7 +1978,11 @@ def fetch_all_stats(config):
         "artist_yearly": round(lifetime_total, 2),
         "total_revenue": round(bits_total_revenue + subs_lifetime_total, 2),
         "tiers": current_tiers,
-        "gifted_tiers": gifted_tiers
+        "gifted_tiers": gifted_tiers,
+        "hours_total": hours_stats["total_hours"],
+        "hours_monthly": hours_stats["monthly_hours"],
+        "hours_today": hours_stats["today_hours"],
+        "hours_session": hours_stats["current_session_hours"]
     }
 
 def save_to_archive(stats):
@@ -1463,6 +2043,9 @@ def setup_config():
         "username": username,
         "channel": username,
         "enable_irc_bits": True,
+        "debug_irc": False,
+        "enable_eventsub_bits": True,
+        "debug_eventsub": False,
         "poll_interval_seconds": 60
     }
     save_config(config)
@@ -1479,13 +2062,13 @@ def set_initial_totals():
 
     print("Current Subs by Tier (from Twitch Dashboard):")
     try:
-        tier1 = int(input("  Tier 1 ($2.50) subs: ").strip())
-        tier2 = int(input("  Tier 2 ($5.00) subs: ").strip())
-        tier3 = int(input("  Tier 3 ($24.99) subs: ").strip())
+        tier1 = int(input("  Tier 1 ($4.19) subs: ").strip())
+        tier2 = int(input("  Tier 2 ($6.99) subs: ").strip())
+        tier3 = int(input("  Tier 3 ($17.49) subs: ").strip())
     except ValueError:
         tier1 = tier2 = tier3 = 0
 
-    total_subs_revenue = (tier1 * 2.50) + (tier2 * 5.00) + (tier3 * 24.99)
+    total_subs_revenue = (tier1 * 4.19) + (tier2 * 6.99) + (tier3 * 17.49)
 
     print()
     print("Optional: enter your lifetime Bits *revenue* in USD (from Twitch analytics)")
@@ -1538,7 +2121,8 @@ def set_initial_totals():
     )
     save_bits_tracker(bits_data)
 
-    artist_subs_lifetime = total_subs_revenue * 0.30
+    # Artist gets 30% of streamer's Twitch payout (Option B)
+    artist_subs_lifetime = (tier1 * TIER_VALUES["1000"] + tier2 * TIER_VALUES["2000"] + tier3 * TIER_VALUES["3000"]) * 0.30
 
     earnings_data = {
         "monthly_bits": {},
@@ -1552,16 +2136,44 @@ def set_initial_totals():
     save_artist_earnings(earnings_data)
 
     print(f"\nInitial totals set!")
-    print(f"  Tier 1: {tier1} x $2.50")
-    print(f"  Tier 2: {tier2} x $5.00")
-    print(f"  Tier 3: {tier3} x $24.99")
+    print(f"  Tier 1: {tier1} x $4.19")
+    print(f"  Tier 2: {tier2} x $6.99")
+    print(f"  Tier 3: {tier3} x $17.49")
     print(f"  Subs Revenue: ${total_subs_revenue:.2f}")
     print(f"  Artist Subs Lifetime: ${artist_subs_lifetime:.2f}")
     print(f"\nRun 'python twitch_stats.py' to start tracking")
 
+def _parse_csv_currency(value):
+    """Parse a currency string from CSV (handles $, commas, empty values)."""
+    if not value:
+        return 0.0
+    try:
+        return float(str(value).replace('$', '').replace(',', '').strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+def _parse_csv_int(value):
+    """Parse an integer from CSV (handles commas, empty values)."""
+    if not value:
+        return 0
+    try:
+        return int(str(value).replace(',', '').strip())
+    except (ValueError, TypeError):
+        return 0
+
 def import_csv_history(folder):
+    """Import historical data from Twitch Analytics CSV exports.
+
+    Uses Twitch's actual reported revenue columns for accuracy:
+    - Sub Revenue, Prime Revenue, Gifted Subs Revenue, Bits Revenue
+
+    Also creates archive files for dashboard display.
+    Artist earnings = 30% of your Twitch payout (Option B).
+    """
     print(f"\nImporting CSV history from: {folder}")
     print("=" * 40)
+    print("Using Twitch's actual revenue columns for accuracy")
+    print("Creating archive files for dashboard...")
 
     if not os.path.exists(folder):
         print(f"Folder not found: {folder}")
@@ -1572,127 +2184,616 @@ def import_csv_history(folder):
         print("No CSV files found in folder")
         return
 
-    earnings_data = load_artist_earnings()
-    sub_data = load_sub_tiers()
-    imported_bits_revenue_total = 0.0
+    # Reset earnings data for fresh import
+    earnings_data = {
+        "monthly_bits": {},
+        "monthly_subs": {},
+        "monthly_gifted": {},
+        "lifetime_bits": 0,
+        "lifetime_subs": 0,
+        "lifetime_gifted": 0,
+        "lifetime_total": 0
+    }
+
+    # Track totals for summary
+    imported_bits_total = 0.0
+    imported_subs_total = 0.0
+    imported_gifted_total = 0.0
+    imported_prime_total = 0.0
+
+    # First pass: collect all data rows from all files
+    # Extended format with all columns needed for archive
+    all_rows = []
+
+    print("\nFirst pass: collecting all data...")
 
     for csv_file in sorted(csv_files):
         filename = os.path.basename(csv_file)
-        print(f"\nProcessing: {filename}")
 
         try:
-            with open(csv_file, 'r') as f:
+            with open(csv_file, 'r', encoding='utf-8-sig') as f:
                 reader = csv.DictReader(f)
                 if not reader.fieldnames:
-                    print(f"  Empty file")
                     continue
 
-                print(f"  Columns: {', '.join(reader.fieldnames)}")
+                # Check if this file has revenue columns
+                has_revenue_cols = 'Sub Revenue' in reader.fieldnames or 'Bits Revenue' in reader.fieldnames
+
+                if not has_revenue_cols:
+                    continue
 
                 for row in reader:
                     date = row.get('Date', '').strip()
                     if not date:
                         continue
 
-                    bits = 0
-                    bits_col = row.get('Bits Revenue', '').strip()
-                    if bits_col:
+                    # Parse date to standardized format
+                    date_key = None
+                    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%a %b %d %Y"]:
                         try:
-                            bits = float(bits_col.replace('$', '').replace(',', ''))
-                        except:
-                            pass
+                            date_key = datetime.strptime(date, fmt).strftime("%Y-%m-%d")
+                            break
+                        except ValueError:
+                            continue
 
-                    if bits > 0:
-                        imported_bits_revenue_total += bits
-
-                    tier1 = tier2 = tier3 = 0
-                    tier1_col = row.get('Tier 1 subs', '').strip()
-                    tier2_col = row.get('Tier 2 subs', '').strip()
-                    tier3_col = row.get('Tier 3 subs', '').strip()
-
-                    if tier1_col:
-                        try:
-                            tier1 = int(tier1_col.replace(',', ''))
-                        except:
-                            pass
-                    if tier2_col:
-                        try:
-                            tier2 = int(tier2_col.replace(',', ''))
-                        except:
-                            pass
-                    if tier3_col:
-                        try:
-                            tier3 = int(tier3_col.replace(',', ''))
-                        except:
-                            pass
-
-                    if bits == 0 and tier1 == 0 and tier2 == 0 and tier3 == 0:
+                    if not date_key:
                         continue
 
-                    try:
-                        month = datetime.strptime(date, "%Y-%m-%d").strftime("%Y-%m")
-                    except ValueError:
-                        try:
-                            month = datetime.strptime(date, "%m/%d/%Y").strftime("%Y-%m")
-                        except ValueError:
-                            try:
-                                month = datetime.strptime(date, "%a %b %d %Y").strftime("%Y-%m")
-                            except ValueError:
-                                try:
-                                    month = datetime.strptime(date, "%Y-%m").strftime("%Y-%m")
-                                except ValueError:
-                                    print(f"  Skipping invalid date: {date}")
-                                    continue
+                    month = date_key[:7]  # YYYY-MM
 
-                    subs_revenue = (tier1 * 2.50) + (tier2 * 5.00) + (tier3 * 24.99)
+                    # Read actual revenue columns from Twitch CSV
+                    bits_rev = _parse_csv_currency(row.get('Bits Revenue', ''))
+                    sub_rev = _parse_csv_currency(row.get('Sub Revenue', ''))
+                    prime_rev = _parse_csv_currency(row.get('Prime Revenue', ''))
+                    gifted_rev = _parse_csv_currency(row.get('Gifted Subs Revenue', ''))
 
-                    artist_bits = bits * 0.30
-                    artist_subs = subs_revenue * 0.30
+                    # Read subscriber/follower counts for archive
+                    total_paid_subs = _parse_csv_int(row.get('Total Paid Subs', ''))
+                    prime_subs = _parse_csv_int(row.get('Prime Subs', ''))
+                    subscribers = total_paid_subs + prime_subs
 
-                    current_monthly_bits = earnings_data["monthly_bits"].get(month, 0)
-                    current_monthly_subs = earnings_data["monthly_subs"].get(month, 0)
+                    # Read tier breakdowns
+                    tier1 = _parse_csv_int(row.get('Tier 1 subs', ''))
+                    tier2 = _parse_csv_int(row.get('Tier 2 subs', ''))
+                    tier3 = _parse_csv_int(row.get('Tier 3 subs', ''))
 
-                    earnings_data["monthly_bits"][month] = round(current_monthly_bits + artist_bits, 2)
-                    earnings_data["monthly_subs"][month] = round(current_monthly_subs + artist_subs, 2)
+                    # Read gifted tier breakdowns
+                    gifted_tier1 = _parse_csv_int(row.get('Gifted Tier 1 subs', ''))
+                    gifted_tier2 = _parse_csv_int(row.get('Gifted Tier 2 subs', ''))
+                    gifted_tier3 = _parse_csv_int(row.get('Gifted Tier 3 subs', ''))
 
-                    print(f"  {month}: ${artist_bits:,.2f} artist bits (${bits:,.2f} total), Tier1={tier1}, Tier2={tier2}, Tier3={tier3}, Artist Subs=${artist_subs:,.2f}")
+                    # Followers not in revenue CSV, use 0
+                    followers = 0
+
+                    # Read minutes streamed for hours tracking
+                    minutes_streamed = _parse_csv_int(row.get('Minutes Streamed', ''))
+
+                    all_rows.append({
+                        'date_key': date_key,
+                        'month': month,
+                        'bits_rev': bits_rev,
+                        'sub_rev': sub_rev,
+                        'prime_rev': prime_rev,
+                        'gifted_rev': gifted_rev,
+                        'subscribers': subscribers,
+                        'followers': followers,
+                        'tier1': tier1,
+                        'tier2': tier2,
+                        'tier3': tier3,
+                        'gifted_tier1': gifted_tier1,
+                        'gifted_tier2': gifted_tier2,
+                        'gifted_tier3': gifted_tier3,
+                        'minutes_streamed': minutes_streamed,
+                        'filename': filename
+                    })
 
         except Exception as e:
             print(f"  Error reading {filename}: {e}")
 
+    if not all_rows:
+        print("No valid data found in any files")
+        return
+
+    # Sort all rows by date and deduplicate
+    all_rows.sort(key=lambda x: x['date_key'])
+
+    print(f"\nSecond pass: processing {len(all_rows)} records chronologically...")
+    print("=" * 40)
+
+    # Ensure archive directory exists
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+
+    processed_dates = set()
+    running_bits_total = 0.0
+    running_subs_total = 0.0
+    archive_count = 0
+
+    # Hours tracking
+    hours_data = {
+        "total_hours": 0.0,
+        "monthly_hours": {},
+        "daily_hours": {}
+    }
+
+    for row in all_rows:
+        date_key = row['date_key']
+        month = row['month']
+        bits_rev = row['bits_rev']
+        sub_rev = row['sub_rev']
+        prime_rev = row['prime_rev']
+        gifted_rev = row['gifted_rev']
+
+        # Skip if we already processed this exact date
+        if date_key in processed_dates:
+            continue
+        processed_dates.add(date_key)
+
+        # Calculate daily revenue
+        subs_today = sub_rev + prime_rev + gifted_rev
+
+        # Update running totals
+        running_bits_total += bits_rev
+        running_subs_total += subs_today
+
+        # Calculate artist earnings (30% of your Twitch payout)
+        artist_bits = bits_rev * 0.30
+        artist_subs = (sub_rev + prime_rev) * 0.30
+        artist_gifted = gifted_rev * 0.30
+
+        # Accumulate monthly totals for artist earnings
+        earnings_data["monthly_bits"][month] = round(
+            earnings_data["monthly_bits"].get(month, 0) + artist_bits, 2)
+        earnings_data["monthly_subs"][month] = round(
+            earnings_data["monthly_subs"].get(month, 0) + artist_subs, 2)
+        earnings_data["monthly_gifted"][month] = round(
+            earnings_data["monthly_gifted"].get(month, 0) + artist_gifted, 2)
+
+        # Accumulate import totals for summary
+        imported_bits_total += bits_rev
+        imported_subs_total += sub_rev
+        imported_prime_total += prime_rev
+        imported_gifted_total += gifted_rev
+
+        # Calculate artist monthly/yearly for archive
+        artist_bits_monthly = earnings_data["monthly_bits"].get(month, 0)
+        artist_subs_monthly = earnings_data["monthly_subs"].get(month, 0)
+        artist_gifted_monthly = earnings_data["monthly_gifted"].get(month, 0)
+        artist_raise_30 = artist_bits_monthly + artist_subs_monthly + artist_gifted_monthly
+        artist_yearly = sum(earnings_data["monthly_bits"].values()) + \
+                       sum(earnings_data["monthly_subs"].values()) + \
+                       sum(earnings_data["monthly_gifted"].values())
+
+        # Create archive file for this day
+        archive_stats = {
+            "timestamp": f"{date_key}T23:59:59",
+            "subscribers": row['subscribers'],
+            "followers": row['followers'],
+            "bits_today": round(bits_rev, 2),
+            "bits_total": round(running_bits_total, 2),
+            "subs_today_revenue": round(subs_today, 2),
+            "subs_total_revenue": round(running_subs_total, 2),
+            "artist_bits_monthly": round(artist_bits_monthly, 2),
+            "artist_subs_monthly": round(artist_subs_monthly, 2),
+            "artist_gifted_monthly": round(artist_gifted_monthly, 2),
+            "artist_raise_30": round(artist_raise_30, 2),
+            "artist_yearly": round(artist_yearly, 2),
+            "total_revenue": round(running_bits_total + running_subs_total, 2),
+            "tiers": {"1000": row['tier1'], "2000": row['tier2'], "3000": row['tier3']},
+            "gifted_tiers": {"1000": row['gifted_tier1'], "2000": row['gifted_tier2'], "3000": row['gifted_tier3']}
+        }
+
+        # Write archive file
+        archive_file = os.path.join(ARCHIVE_DIR, f"stats_archive_{date_key}.csv")
+        with open(archive_file, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=ARCHIVE_FIELDS, extrasaction='ignore')
+            writer.writeheader()
+            archive_row = {k: archive_stats.get(k, 0) for k in ARCHIVE_FIELDS}
+            archive_row["tiers"] = archive_stats["tiers"]
+            archive_row["gifted_tiers"] = archive_stats["gifted_tiers"]
+            writer.writerow(archive_row)
+        archive_count += 1
+
+        # Accumulate hours from minutes streamed
+        minutes_streamed = row.get('minutes_streamed', 0)
+        if minutes_streamed > 0:
+            hours_today = minutes_streamed / 60.0
+            hours_data["total_hours"] += hours_today
+            hours_data["daily_hours"][date_key] = round(hours_today, 2)
+            hours_data["monthly_hours"][month] = round(
+                hours_data["monthly_hours"].get(month, 0) + hours_today, 2
+            )
+
+        # Print daily summary (only if there's activity)
+        total_day_rev = bits_rev + sub_rev + prime_rev + gifted_rev
+        if total_day_rev > 0:
+            print(f"  {date_key}: Bits=${bits_rev:.2f} Subs=${sub_rev:.2f} Prime=${prime_rev:.2f} Gifted=${gifted_rev:.2f} | Artist=${(artist_bits + artist_subs + artist_gifted):.2f}")
+
+    # Calculate lifetime totals
     lifetime_bits = sum(earnings_data["monthly_bits"].values())
     lifetime_subs = sum(earnings_data["monthly_subs"].values())
+    lifetime_gifted = sum(earnings_data["monthly_gifted"].values())
 
     earnings_data["lifetime_bits"] = round(lifetime_bits, 2)
     earnings_data["lifetime_subs"] = round(lifetime_subs, 2)
-    earnings_data["lifetime_total"] = round(lifetime_bits + lifetime_subs, 2)
+    earnings_data["lifetime_gifted"] = round(lifetime_gifted, 2)
+    earnings_data["lifetime_total"] = round(lifetime_bits + lifetime_subs + lifetime_gifted, 2)
 
     save_artist_earnings(earnings_data)
 
-    # Seed bits lifetime totals from imported CSV revenue.
+    # Seed bits lifetime totals from imported CSV revenue
     try:
         bits_data = load_bits_tracker()
-        bits_data["lifetime_bits_revenue_imported"] = round(float(imported_bits_revenue_total), 2)
+        bits_data["lifetime_bits_revenue_imported"] = round(imported_bits_total, 2)
         bits_data["lifetime_bits_revenue"] = round(
             float(bits_data.get("lifetime_bits_revenue_tracked", 0.0) or 0.0)
-            + float(bits_data.get("lifetime_bits_revenue_imported", 0.0) or 0.0),
+            + imported_bits_total,
             2,
         )
         save_bits_tracker(bits_data)
     except Exception as e:
-        print(f"WARNING: Failed to seed bits totals from CSV import: {e}")
+        print(f"WARNING: Failed to seed bits totals: {e}")
+
+    # Seed sub revenue lifetime totals from imported CSV revenue
+    try:
+        total_sub_revenue = imported_subs_total + imported_prime_total + imported_gifted_total
+        sub_rev_data = {
+            "date": get_current_date_key(),
+            "today_total": 0.0,
+            "today_nongift": 0.0,
+            "today_gifted": 0.0,
+            "lifetime_total": round(total_sub_revenue, 2),
+            "lifetime_nongift": round(imported_subs_total + imported_prime_total, 2),
+            "lifetime_gifted": round(imported_gifted_total, 2),
+        }
+        save_sub_revenue(sub_rev_data)
+    except Exception as e:
+        print(f"WARNING: Failed to seed sub revenue totals: {e}")
+
+    # Save hours streamed data from import
+    try:
+        hours_data["total_hours"] = round(hours_data["total_hours"], 2)
+        save_hours_streamed(hours_data)
+        print(f"\n  HOURS STREAMED (from CSV):")
+        print(f"    Total Hours: {hours_data['total_hours']:.1f}")
+    except Exception as e:
+        print(f"WARNING: Failed to save hours data: {e}")
 
     print(f"\n" + "=" * 40)
-    print("Import complete!")
-    print(f"  Artist Bits (30%) Lifetime: ${lifetime_bits:,.2f}")
-    print(f"  Artist Subs (30%) Lifetime: ${lifetime_subs:,.2f}")
-    print(f"  Artist Lifetime (30%): ${earnings_data['lifetime_total']:,.2f}")
-    print(f"  Bits Revenue Imported (100%): ${imported_bits_revenue_total:,.2f}")
-    print(f"\nRun 'python twitch_stats.py' to start tracking")
+    print("Import complete! (Using Twitch's actual revenue data)")
+    print(f"\n  DASHBOARD ARCHIVE:")
+    print(f"    Created {archive_count} daily archive files")
+    print(f"    Location: {ARCHIVE_DIR}/")
+    print(f"\n  YOUR REVENUE (100%):")
+    print(f"    Bits:   ${imported_bits_total:,.2f}")
+    print(f"    Subs:   ${imported_subs_total:,.2f}")
+    print(f"    Prime:  ${imported_prime_total:,.2f}")
+    print(f"    Gifted: ${imported_gifted_total:,.2f}")
+    print(f"    TOTAL:  ${(imported_bits_total + imported_subs_total + imported_prime_total + imported_gifted_total):,.2f}")
+    print(f"\n  ARTIST EARNINGS (30% of your payout):")
+    print(f"    From Bits:   ${lifetime_bits:,.2f}")
+    print(f"    From Subs:   ${lifetime_subs:,.2f}")
+    print(f"    From Gifted: ${lifetime_gifted:,.2f}")
+    print(f"    TOTAL:       ${earnings_data['lifetime_total']:,.2f}")
+    print(f"\nDashboard: http://localhost:3001/dashboard.html")
+    print(f"Run 'python twitch_stats.py' to start tracking")
+
+
+def backfill_archives_only(folder):
+    """Backfill dashboard archive files from Twitch CSV exports WITHOUT modifying live data.
+
+    This creates archive files for the dashboard to display historical charts,
+    but does NOT touch:
+    - artist_earnings.json
+    - bits_tracker.json
+    - sub_revenue.json
+    - subscribers.json
+    - latest_stats.json
+
+    Safe to run without affecting your live tracking data.
+    """
+    print(f"\nBackfilling dashboard archives from: {folder}")
+    print("=" * 40)
+    print("NOTE: This only creates archive files for dashboard display.")
+    print("      Your live tracking data will NOT be modified.")
+
+    if not os.path.exists(folder):
+        print(f"Folder not found: {folder}")
+        return
+
+    csv_files = glob.glob(os.path.join(folder, "*.csv"))
+    if not csv_files:
+        print("No CSV files found in folder")
+        return
+
+    # Collect all data rows
+    all_rows = []
+
+    print("\nReading CSV files...")
+
+    for csv_file in sorted(csv_files):
+        filename = os.path.basename(csv_file)
+
+        try:
+            with open(csv_file, 'r', encoding='utf-8-sig') as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    continue
+
+                has_revenue_cols = 'Sub Revenue' in reader.fieldnames or 'Bits Revenue' in reader.fieldnames
+                if not has_revenue_cols:
+                    continue
+
+                for row in reader:
+                    date = row.get('Date', '').strip()
+                    if not date:
+                        continue
+
+                    date_key = None
+                    for fmt in ["%Y-%m-%d", "%m/%d/%Y", "%a %b %d %Y"]:
+                        try:
+                            date_key = datetime.strptime(date, fmt).strftime("%Y-%m-%d")
+                            break
+                        except ValueError:
+                            continue
+
+                    if not date_key:
+                        continue
+
+                    month = date_key[:7]
+
+                    bits_rev = _parse_csv_currency(row.get('Bits Revenue', ''))
+                    sub_rev = _parse_csv_currency(row.get('Sub Revenue', ''))
+                    prime_rev = _parse_csv_currency(row.get('Prime Revenue', ''))
+                    gifted_rev = _parse_csv_currency(row.get('Gifted Subs Revenue', ''))
+
+                    total_paid_subs = _parse_csv_int(row.get('Total Paid Subs', ''))
+                    prime_subs = _parse_csv_int(row.get('Prime Subs', ''))
+                    subscribers = total_paid_subs + prime_subs
+
+                    tier1 = _parse_csv_int(row.get('Tier 1 subs', ''))
+                    tier2 = _parse_csv_int(row.get('Tier 2 subs', ''))
+                    tier3 = _parse_csv_int(row.get('Tier 3 subs', ''))
+
+                    gifted_tier1 = _parse_csv_int(row.get('Gifted Tier 1 subs', ''))
+                    gifted_tier2 = _parse_csv_int(row.get('Gifted Tier 2 subs', ''))
+                    gifted_tier3 = _parse_csv_int(row.get('Gifted Tier 3 subs', ''))
+
+                    all_rows.append({
+                        'date_key': date_key,
+                        'month': month,
+                        'bits_rev': bits_rev,
+                        'sub_rev': sub_rev,
+                        'prime_rev': prime_rev,
+                        'gifted_rev': gifted_rev,
+                        'subscribers': subscribers,
+                        'tier1': tier1,
+                        'tier2': tier2,
+                        'tier3': tier3,
+                        'gifted_tier1': gifted_tier1,
+                        'gifted_tier2': gifted_tier2,
+                        'gifted_tier3': gifted_tier3,
+                    })
+
+        except Exception as e:
+            print(f"  Error reading {filename}: {e}")
+
+    if not all_rows:
+        print("No valid data found in any files")
+        return
+
+    all_rows.sort(key=lambda x: x['date_key'])
+
+    print(f"\nCreating {len(all_rows)} archive files...")
+    print("=" * 40)
+
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+
+    # Track monthly artist earnings for archive (not saved to JSON)
+    monthly_bits = {}
+    monthly_subs = {}
+    monthly_gifted = {}
+
+    processed_dates = set()
+    running_bits_total = 0.0
+    running_subs_total = 0.0
+    archive_count = 0
+    skipped_count = 0
+
+    for row in all_rows:
+        date_key = row['date_key']
+        month = row['month']
+
+        if date_key in processed_dates:
+            continue
+        processed_dates.add(date_key)
+
+        # Check if archive already exists (don't overwrite live data)
+        archive_file = os.path.join(ARCHIVE_DIR, f"stats_archive_{date_key}.csv")
+        if os.path.exists(archive_file):
+            skipped_count += 1
+            continue
+
+        bits_rev = row['bits_rev']
+        sub_rev = row['sub_rev']
+        prime_rev = row['prime_rev']
+        gifted_rev = row['gifted_rev']
+
+        subs_today = sub_rev + prime_rev + gifted_rev
+        running_bits_total += bits_rev
+        running_subs_total += subs_today
+
+        # Calculate artist earnings for this archive only
+        artist_bits = bits_rev * 0.30
+        artist_subs = (sub_rev + prime_rev) * 0.30
+        artist_gifted = gifted_rev * 0.30
+
+        monthly_bits[month] = monthly_bits.get(month, 0) + artist_bits
+        monthly_subs[month] = monthly_subs.get(month, 0) + artist_subs
+        monthly_gifted[month] = monthly_gifted.get(month, 0) + artist_gifted
+
+        artist_bits_monthly = monthly_bits.get(month, 0)
+        artist_subs_monthly = monthly_subs.get(month, 0)
+        artist_gifted_monthly = monthly_gifted.get(month, 0)
+        artist_raise_30 = artist_bits_monthly + artist_subs_monthly + artist_gifted_monthly
+        artist_yearly = sum(monthly_bits.values()) + sum(monthly_subs.values()) + sum(monthly_gifted.values())
+
+        archive_stats = {
+            "timestamp": f"{date_key}T23:59:59",
+            "subscribers": row['subscribers'],
+            "followers": 0,
+            "bits_today": round(bits_rev, 2),
+            "bits_total": round(running_bits_total, 2),
+            "subs_today_revenue": round(subs_today, 2),
+            "subs_total_revenue": round(running_subs_total, 2),
+            "artist_bits_monthly": round(artist_bits_monthly, 2),
+            "artist_subs_monthly": round(artist_subs_monthly, 2),
+            "artist_gifted_monthly": round(artist_gifted_monthly, 2),
+            "artist_raise_30": round(artist_raise_30, 2),
+            "artist_yearly": round(artist_yearly, 2),
+            "total_revenue": round(running_bits_total + running_subs_total, 2),
+            "tiers": {"1000": row['tier1'], "2000": row['tier2'], "3000": row['tier3']},
+            "gifted_tiers": {"1000": row['gifted_tier1'], "2000": row['gifted_tier2'], "3000": row['gifted_tier3']}
+        }
+
+        with open(archive_file, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=ARCHIVE_FIELDS, extrasaction='ignore')
+            writer.writeheader()
+            archive_row = {k: archive_stats.get(k, 0) for k in ARCHIVE_FIELDS}
+            archive_row["tiers"] = archive_stats["tiers"]
+            archive_row["gifted_tiers"] = archive_stats["gifted_tiers"]
+            writer.writerow(archive_row)
+
+        archive_count += 1
+
+        total_day_rev = bits_rev + sub_rev + prime_rev + gifted_rev
+        if total_day_rev > 0:
+            print(f"  {date_key}: Bits=${bits_rev:.2f} Subs=${sub_rev + prime_rev:.2f} Gifted=${gifted_rev:.2f}")
+
+    # Generate consolidated JSON for fast dashboard loading
+    generate_dashboard_json()
+
+    print(f"\n" + "=" * 40)
+    print("Backfill complete!")
+    print(f"  Created: {archive_count} new archive files")
+    print(f"  Skipped: {skipped_count} (already exist - preserving live data)")
+    print(f"  Location: {ARCHIVE_DIR}/")
+    print(f"\nYour live tracking data was NOT modified.")
+    print(f"\nDashboard: http://localhost:3001/dashboard.html")
+    print(f"Run 'python twitch_stats.py' to start tracking")
+
+
+def generate_dashboard_json():
+    """Generate a consolidated JSON file from all archive CSVs for fast dashboard loading."""
+    print("\nGenerating dashboard_data.json...")
+
+    archive_files = glob.glob(os.path.join(ARCHIVE_DIR, "stats_archive_*.csv"))
+    if not archive_files:
+        print("  No archive files found")
+        return
+
+    all_data = []
+
+    for archive_file in sorted(archive_files):
+        filename = os.path.basename(archive_file)
+        date_str = filename.replace("stats_archive_", "").replace(".csv", "")
+
+        try:
+            with open(archive_file, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    stats = {"date": date_str}
+                    for key, value in row.items():
+                        if key in ('tiers', 'gifted_tiers'):
+                            # Parse dict-like string
+                            try:
+                                stats[key] = eval(value) if value else {}
+                            except:
+                                stats[key] = {}
+                        elif key == 'timestamp':
+                            stats[key] = value
+                        else:
+                            try:
+                                stats[key] = float(value) if value else 0
+                            except:
+                                stats[key] = 0
+                    all_data.append(stats)
+                    break  # Only take first data row (header + 1 row per file)
+        except Exception as e:
+            print(f"  Warning: Could not read {filename}: {e}")
+
+    # Sort by date
+    all_data.sort(key=lambda x: x.get('date', ''))
+
+    # Write consolidated JSON
+    output_file = os.path.join(DATA_DIR, "dashboard_data.json")
+    tmp_path = output_file + ".tmp"
+    with open(tmp_path, 'w') as f:
+        json.dump(all_data, f)
+    os.replace(tmp_path, output_file)
+
+    print(f"  Created: {output_file} ({len(all_data)} days)")
+
 
 class StatsHandler(http.server.SimpleHTTPRequestHandler):
+    # Files/patterns that must never be served over HTTP.
+    _BLOCKED_PATHS = {
+        "/config.json",
+        "/.env",
+        "/agent.md",
+    }
+    _BLOCKED_PREFIXES = (
+        "/__pycache__/",
+        "/.git/",
+    )
+    _BLOCKED_EXTENSIONS = (
+        ".py",
+        ".pyc",
+    )
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=os.path.dirname(os.path.abspath(__file__)), **kwargs)
+
+    def do_GET(self):
+        """Block access to sensitive files (config, source code, etc.)."""
+        from urllib.parse import urlparse
+        path = urlparse(self.path).path
+        # Normalize to prevent path traversal via double slashes, etc.
+        path = os.path.normpath(path).replace("\\", "/")
+        if not path.startswith("/"):
+            path = "/" + path
+
+        # API endpoints
+        if path == '/api/hours':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            hours_stats = get_hours_streamed()
+            self.wfile.write(json.dumps(hours_stats).encode())
+            return
+
+        if path == '/api/stats':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            try:
+                with open(LATEST_FILE, 'r') as f:
+                    stats = json.load(f)
+            except Exception:
+                stats = {}
+            self.wfile.write(json.dumps(stats).encode())
+            return
+
+        if (
+            path in self._BLOCKED_PATHS
+            or path.startswith(self._BLOCKED_PREFIXES)
+            or path.endswith(self._BLOCKED_EXTENSIONS)
+        ):
+            self.send_response(403)
+            self.end_headers()
+            self.wfile.write(b"Forbidden")
+            return
+
+        super().do_GET()
 
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -1707,32 +2808,100 @@ class StatsHandler(http.server.SimpleHTTPRequestHandler):
     
     def do_POST(self):
         parsed_path = urlparse(self.path)
-        
-        if parsed_path.path == '/api/save-branding':
+
+        if parsed_path.path == '/api/add-bits':
+            # Manual bits import from admin page
             content_length = int(self.headers.get('Content-Length', 0))
             if content_length > 0:
                 post_data = self.rfile.read(content_length)
-                
+
+                try:
+                    data = json.loads(post_data.decode('utf-8'))
+                    bits = int(data.get('bits', 0))
+                    username = str(data.get('username', 'Manual')).strip()
+
+                    if bits <= 0:
+                        raise ValueError("Bits must be positive")
+
+                    # Record the bits using existing function
+                    record_cheer(bits)
+
+                    # Send success response
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+
+                    # Get updated totals
+                    bits_data = load_bits_tracker()
+
+                    self.wfile.write(json.dumps({
+                        'success': True,
+                        'message': f'Added {bits} bits from {username}',
+                        'bits_today': bits_data.get('today_bits_revenue', 0),
+                        'bits_total': bits_data.get('lifetime_bits_revenue', 0)
+                    }).encode())
+
+                    print(f"  + Manual bits: {bits} from {username}")
+
+                except Exception as e:
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({
+                        'success': False,
+                        'error': str(e)
+                    }).encode())
+            else:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    'success': False,
+                    'error': 'No data provided'
+                }).encode())
+
+        elif parsed_path.path == '/api/save-branding':
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length > 0:
+                post_data = self.rfile.read(content_length)
+
                 try:
                     branding_config = json.loads(post_data.decode('utf-8'))
-                    
+
+                    # Create backup of existing branding.json before saving
+                    try:
+                        os.makedirs(DATA_DIR, exist_ok=True)
+                        if os.path.exists(BRANDING_CONFIG_FILE):
+                            backup_file = BRANDING_CONFIG_FILE + f".backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                            import shutil
+                            shutil.copy2(BRANDING_CONFIG_FILE, backup_file)
+                            # Keep only last 5 backups
+                            backup_pattern = BRANDING_CONFIG_FILE + ".backup.*"
+                            backups = sorted(glob.glob(backup_pattern), reverse=True)
+                            for old_backup in backups[5:]:
+                                try:
+                                    os.remove(old_backup)
+                                except Exception:
+                                    pass
+                    except Exception as e:
+                        print(f"Warning: Could not create branding backup: {e}")
+
                     # Generate the branding-setup.js content
                     js_content = generate_branding_js(branding_config)
-                    
+
                     # Write to file
                     with open('branding-setup.js', 'w') as f:
                         f.write(js_content)
 
                     # Also persist the raw config for debugging/backup.
                     try:
-                        os.makedirs(DATA_DIR, exist_ok=True)
                         tmp_path = BRANDING_CONFIG_FILE + ".tmp"
                         with open(tmp_path, 'w') as f:
                             json.dump(branding_config, f, indent=2)
                         os.replace(tmp_path, BRANDING_CONFIG_FILE)
                     except Exception:
                         pass
-                    
+
                     # Send success response
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
@@ -1741,9 +2910,9 @@ class StatsHandler(http.server.SimpleHTTPRequestHandler):
                         'success': True,
                         'message': 'Branding saved successfully!'
                     }).encode())
-                    
-                    print(f"✓ Branding updated: {branding_config.get('fontFamily', 'Unknown')} font")
-                    
+
+                    print(f"Branding updated: {branding_config.get('fontFamily', 'Unknown')} font")
+
                 except Exception as e:
                     self.send_response(500)
                     self.send_header('Content-Type', 'application/json')
@@ -1759,151 +2928,100 @@ class StatsHandler(http.server.SimpleHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+def _js_string_escape(value):
+    """Escape a value for safe interpolation inside a JS double-quoted string."""
+    s = str(value)
+    s = s.replace("\\", "\\\\")
+    s = s.replace('"', '\\"')
+    s = s.replace("'", "\\'")
+    s = s.replace("<", "\\x3c")
+    s = s.replace(">", "\\x3e")
+    s = s.replace("\n", "\\n")
+    s = s.replace("\r", "\\r")
+    return s
+
+def _gen_widget_js(w, defaults):
+    """Generate JS object literal for a single widget config."""
+    _e = _js_string_escape
+    colors = w.get('colors', {})
+    border = w.get('border', {})
+    bg = w.get('background', {})
+    padding = w.get('padding', {})
+    return f"""{{
+            enabled: {str(w.get('enabled', defaults.get('enabled', True))).lower()},
+            fontSize: {int(w.get('fontSize', defaults['fontSize']))},
+            labelFontSize: {int(w.get('labelFontSize', 14))},
+            labelGap: {int(w.get('labelGap', 5))},
+            colors: {{
+                text: "{_e(colors.get('text', defaults['text']))}",
+                label: "{_e(colors.get('label', '#aaaaaa'))}",
+                border: "{_e(colors.get('border', defaults['border']))}",
+                background: "{_e(colors.get('background', 'rgba(0,0,0,0.3)'))}"
+            }},
+            border: {{
+                width: {int(border.get('width', 2))},
+                style: "{_e(border.get('style', 'solid'))}",
+                radius: {int(border.get('radius', 0))}
+            }},
+            background: {{
+                enabled: {str(bg.get('enabled', False)).lower()},
+                color: "{_e(bg.get('color', 'rgba(0,0,0,0.3)'))}",
+                opacity: {int(bg.get('opacity', 30))}
+            }},
+            padding: {{
+                vertical: {int(padding.get('vertical', 8))},
+                horizontal: {int(padding.get('horizontal', 15))}
+            }},
+            textShadow: "{_e(w.get('textShadow', '2px 2px 4px rgba(0,0,0,0.8)'))}"
+        }}"""
+
+
 def generate_branding_js(config):
     """Generate the modular branding-setup.js file content from config"""
+    import json as _json
+    _e = _js_string_escape
     widgets = config.get('widgets', {})
-    
-    followers = widgets.get('followers', {})
-    subgoal = widgets.get('subgoal', {})
-    monthly = widgets.get('monthly', {})
-    lifetime = widgets.get('lifetime', {})
-    bits = widgets.get('bits', {})
-    
+
+    widget_defaults = {
+        'followers': {'fontSize': 48, 'text': '#9146ff', 'border': '#9146ff'},
+        'subgoal':   {'fontSize': 42, 'text': '#00d2d3', 'border': '#00d2d3'},
+        'bits':      {'fontSize': 42, 'text': '#2ed573', 'border': '#2ed573'},
+        'hours':     {'fontSize': 42, 'text': '#00bcd4', 'border': '#00bcd4'},
+        'monthly':   {'fontSize': 42, 'text': '#ff6b6b', 'border': '#ff6b6b'},
+        'lifetime':  {'fontSize': 36, 'text': '#ffd700', 'border': '#ffd700'},
+    }
+
+    widget_order = config.get('widgetOrder', ['followers', 'subgoal', 'bits', 'hours', 'monthly', 'lifetime'])
+    widget_groups = config.get('widgetGroups', [])
+
+    widget_blocks = []
+    for name in ['followers', 'subgoal', 'bits', 'hours', 'monthly', 'lifetime']:
+        w = widgets.get(name, {})
+        d = widget_defaults[name]
+        widget_blocks.append(f"        {name}: {_gen_widget_js(w, d)}")
+
+    widgets_js = ',\n'.join(widget_blocks)
+
     return f'''// Central Configuration for All Widgets
 // Generated by Branding Settings
 // Modular - Each widget has independent styling
 
 const DEFAULT_CONFIG = {{
-    fontFamily: "{config.get('fontFamily', 'Bebas Neue')}",
+    fontFamily: "{_e(config.get('fontFamily', 'Bebas Neue'))}",
     googleFont: {str(config.get('googleFont', True)).lower()},
     fontWeight: "bold",
     textShadow: "2px 2px 4px rgba(0,0,0,0.8)",
-    
+
     layout: {{
-        gap: {config.get('layout', {}).get('gap', 5)}
+        gap: {int(config.get('layout', {}).get('gap', 5))}
     }},
-    
+
+    widgetOrder: {_json.dumps(widget_order)},
+
+    widgetGroups: {_json.dumps(widget_groups)},
+
     widgets: {{
-        followers: {{
-            fontSize: {followers.get('fontSize', 48)},
-            labelFontSize: {followers.get('labelFontSize', 14)},
-            colors: {{
-                text: "{followers.get('colors', {}).get('text', '#9146ff')}",
-                label: "{followers.get('colors', {}).get('label', '#aaaaaa')}",
-                border: "{followers.get('colors', {}).get('border', '#9146ff')}",
-                background: "{followers.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
-            }},
-            border: {{
-                width: {followers.get('border', {}).get('width', 2)},
-                style: "{followers.get('border', {}).get('style', 'solid')}",
-                radius: {followers.get('border', {}).get('radius', 0)}
-            }},
-            background: {{
-                enabled: {str(followers.get('background', {}).get('enabled', False)).lower()},
-                color: "{followers.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
-                opacity: {followers.get('background', {}).get('opacity', 30)}
-            }},
-            padding: {{
-                vertical: {followers.get('padding', {}).get('vertical', 8)},
-                horizontal: {followers.get('padding', {}).get('horizontal', 15)}
-            }}
-        }},
-        subgoal: {{
-            fontSize: {subgoal.get('fontSize', 42)},
-            labelFontSize: {subgoal.get('labelFontSize', 14)},
-            colors: {{
-                text: "{subgoal.get('colors', {}).get('text', '#00d2d3')}",
-                label: "{subgoal.get('colors', {}).get('label', '#aaaaaa')}",
-                border: "{subgoal.get('colors', {}).get('border', '#00d2d3')}",
-                background: "{subgoal.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
-            }},
-            border: {{
-                width: {subgoal.get('border', {}).get('width', 2)},
-                style: "{subgoal.get('border', {}).get('style', 'solid')}",
-                radius: {subgoal.get('border', {}).get('radius', 0)}
-            }},
-            background: {{
-                enabled: {str(subgoal.get('background', {}).get('enabled', False)).lower()},
-                color: "{subgoal.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
-                opacity: {subgoal.get('background', {}).get('opacity', 30)}
-            }},
-            padding: {{
-                vertical: {subgoal.get('padding', {}).get('vertical', 8)},
-                horizontal: {subgoal.get('padding', {}).get('horizontal', 15)}
-            }}
-        }},
-        monthly: {{
-            fontSize: {monthly.get('fontSize', 42)},
-            labelFontSize: {monthly.get('labelFontSize', 14)},
-            colors: {{
-                text: "{monthly.get('colors', {}).get('text', '#ff6b6b')}",
-                label: "{monthly.get('colors', {}).get('label', '#aaaaaa')}",
-                border: "{monthly.get('colors', {}).get('border', '#ff6b6b')}",
-                background: "{monthly.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
-            }},
-            border: {{
-                width: {monthly.get('border', {}).get('width', 2)},
-                style: "{monthly.get('border', {}).get('style', 'solid')}",
-                radius: {monthly.get('border', {}).get('radius', 0)}
-            }},
-            background: {{
-                enabled: {str(monthly.get('background', {}).get('enabled', False)).lower()},
-                color: "{monthly.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
-                opacity: {monthly.get('background', {}).get('opacity', 30)}
-            }},
-            padding: {{
-                vertical: {monthly.get('padding', {}).get('vertical', 8)},
-                horizontal: {monthly.get('padding', {}).get('horizontal', 15)}
-            }}
-        }},
-        lifetime: {{
-            fontSize: {lifetime.get('fontSize', 36)},
-            labelFontSize: {lifetime.get('labelFontSize', 14)},
-            colors: {{
-                text: "{lifetime.get('colors', {}).get('text', '#ffd700')}",
-                label: "{lifetime.get('colors', {}).get('label', '#aaaaaa')}",
-                border: "{lifetime.get('colors', {}).get('border', '#ffd700')}",
-                background: "{lifetime.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
-            }},
-            border: {{
-                width: {lifetime.get('border', {}).get('width', 2)},
-                style: "{lifetime.get('border', {}).get('style', 'solid')}",
-                radius: {lifetime.get('border', {}).get('radius', 0)}
-            }},
-            background: {{
-                enabled: {str(lifetime.get('background', {}).get('enabled', False)).lower()},
-                color: "{lifetime.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
-                opacity: {lifetime.get('background', {}).get('opacity', 30)}
-            }},
-            padding: {{
-                vertical: {lifetime.get('padding', {}).get('vertical', 8)},
-                horizontal: {lifetime.get('padding', {}).get('horizontal', 15)}
-            }}
-        }},
-        bits: {{
-            fontSize: {bits.get('fontSize', 42)},
-            labelFontSize: {bits.get('labelFontSize', 14)},
-            colors: {{
-                text: "{bits.get('colors', {}).get('text', '#2ed573')}",
-                label: "{bits.get('colors', {}).get('label', '#aaaaaa')}",
-                border: "{bits.get('colors', {}).get('border', '#2ed573')}",
-                background: "{bits.get('colors', {}).get('background', 'rgba(0,0,0,0.3)')}"
-            }},
-            border: {{
-                width: {bits.get('border', {}).get('width', 2)},
-                style: "{bits.get('border', {}).get('style', 'solid')}",
-                radius: {bits.get('border', {}).get('radius', 0)}
-            }},
-            background: {{
-                enabled: {str(bits.get('background', {}).get('enabled', False)).lower()},
-                color: "{bits.get('background', {}).get('color', 'rgba(0,0,0,0.3)')}",
-                opacity: {bits.get('background', {}).get('opacity', 30)}
-            }},
-            padding: {{
-                vertical: {bits.get('padding', {}).get('vertical', 8)},
-                horizontal: {bits.get('padding', {}).get('horizontal', 15)}
-            }}
-        }}
+{widgets_js}
     }}
 }};
 
@@ -1972,21 +3090,22 @@ function applyWidgetStyles() {{
     root.style.setProperty('--text-shadow', WIDGET_CONFIG.textShadow);
     root.style.setProperty('--gap', WIDGET_CONFIG.layout.gap + 'px');
     
-    const widgets = ['followers', 'subgoal', 'bits', 'monthly', 'lifetime'];
-    
+    const widgets = ['followers', 'subgoal', 'bits', 'hours', 'monthly', 'lifetime'];
+
     widgets.forEach(widget => {{
         const config = WIDGET_CONFIG.widgets[widget];
         if (!config) return;
-        
+
         const prefix = '--widget-' + widget;
-        
+
         root.style.setProperty(prefix + '-font-size', config.fontSize + 'px');
         root.style.setProperty(prefix + '-label-font-size', config.labelFontSize + 'px');
+        root.style.setProperty(prefix + '-label-gap', (config.labelGap !== undefined ? config.labelGap : 5) + 'px');
         root.style.setProperty(prefix + '-text-color', config.colors.text);
         root.style.setProperty(prefix + '-label-color', config.colors.label);
         root.style.setProperty(prefix + '-border-color', config.colors.border);
-        
-        if (config.background.enabled) {{
+
+        if (config.background && config.background.enabled) {{
             const bgColor = config.background.color || '#000000';
             const opacity = config.background.opacity === undefined || config.background.opacity === null ? 30 : config.background.opacity;
             let hex = bgColor;
@@ -2004,20 +3123,55 @@ function applyWidgetStyles() {{
         }} else {{
             root.style.setProperty(prefix + '-bg-color', 'transparent');
         }}
-        
-        root.style.setProperty(prefix + '-border-width', config.border.width + 'px');
-        root.style.setProperty(prefix + '-border-style', config.border.style);
-        root.style.setProperty(prefix + '-border-radius', config.border.radius + 'px');
-        root.style.setProperty(prefix + '-padding', config.padding.vertical + 'px ' + config.padding.horizontal + 'px');
+
+        root.style.setProperty(prefix + '-border-width', (config.border ? config.border.width : 2) + 'px');
+        root.style.setProperty(prefix + '-border-style', config.border ? config.border.style : 'solid');
+        root.style.setProperty(prefix + '-border-radius', (config.border ? config.border.radius : 0) + 'px');
+        root.style.setProperty(prefix + '-padding', config.padding
+            ? (config.padding.vertical + 'px ' + config.padding.horizontal + 'px')
+            : '8px 15px');
+
+        root.style.setProperty(prefix + '-text-shadow', config.textShadow || WIDGET_CONFIG.textShadow || '2px 2px 4px rgba(0,0,0,0.8)');
     }});
+
+    // Compatibility: older templates use these generic variables.
+    // Map them to the per-widget config so branding still has effect.
+    try {{
+        const f = WIDGET_CONFIG.widgets.followers;
+        const m = WIDGET_CONFIG.widgets.monthly;
+        const l = WIDGET_CONFIG.widgets.lifetime;
+        if (f && f.colors) {{
+            root.style.setProperty('--color-primary', f.colors.text);
+            root.style.setProperty('--color-label', f.colors.label);
+            root.style.setProperty('--bg-color', f.background && f.background.enabled ? (root.style.getPropertyValue('--widget-followers-bg-color') || f.colors.background || 'transparent') : 'transparent');
+            root.style.setProperty('--border-width', (f.border && f.border.width !== undefined ? f.border.width : 0) + 'px');
+            root.style.setProperty('--border-style', (f.border && f.border.style) ? f.border.style : 'solid');
+            root.style.setProperty('--border-radius', (f.border && f.border.radius !== undefined ? f.border.radius : 0) + 'px');
+            root.style.setProperty('--padding', (f.padding ? (f.padding.vertical + 'px ' + f.padding.horizontal + 'px') : '0'));
+        }}
+        if (m && m.colors) root.style.setProperty('--color-monthly', m.colors.text);
+        if (l && l.colors) root.style.setProperty('--color-lifetime', l.colors.text);
+    }} catch (e) {{}}
+}}
+
+function getWidgetOrder() {{
+    return WIDGET_CONFIG.widgetOrder || ['followers', 'subgoal', 'bits', 'hours', 'monthly', 'lifetime'];
+}}
+
+function isWidgetEnabled(widget) {{
+    return WIDGET_CONFIG.widgets[widget]?.enabled !== false;
 }}
 
 document.addEventListener('DOMContentLoaded', applyWidgetStyles);
 '''
 
+class ReusableTCPServer(socketserver.TCPServer):
+    """TCPServer with SO_REUSEADDR to avoid 'Address already in use' on restart."""
+    allow_reuse_address = True
+
 def start_server(port=3001):
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    with socketserver.TCPServer(("", port), StatsHandler) as httpd:
+    with ReusableTCPServer(("", port), StatsHandler) as httpd:
         print(f"Stats Overlay: http://localhost:{port}/obs_overlay.html")
         print(f"Branding Editor: http://localhost:{port}/branding.html")
         print(f"Sidebar2: http://localhost:{port}/sidebar2.html")
@@ -2043,12 +3197,18 @@ if __name__ == "__main__":
         elif sys.argv[1] == "--import-csvs":
             if len(sys.argv) < 3:
                 print("Usage: python twitch_stats.py --import-csvs <folder>")
-                print("\nCSV Format:")
-                print("  date,bits,tier1,tier2,tier3")
-                print("  2024-08,15000,100,25,5")
-                print("\nPlace CSV files in the folder and run this command.")
+                print("\nImports Twitch Analytics CSV exports and updates ALL data files.")
+                print("Use --backfill-archives instead to preserve live tracking data.")
                 sys.exit(1)
             import_csv_history(sys.argv[2])
+        elif sys.argv[1] == "--backfill-archives":
+            if len(sys.argv) < 3:
+                print("Usage: python twitch_stats.py --backfill-archives <folder>")
+                print("\nCreates dashboard archive files from Twitch CSV exports")
+                print("WITHOUT modifying your live tracking data.")
+                print("\nThis is safe to run - it only adds missing archive files.")
+                sys.exit(1)
+            backfill_archives_only(sys.argv[2])
         elif sys.argv[1] == "--simulate-cheer":
             if len(sys.argv) < 3:
                 print("Usage: python twitch_stats.py --simulate-cheer <bits>")
@@ -2057,13 +3217,36 @@ if __name__ == "__main__":
             record_cheer(bits)
             bits_data = load_bits_tracker()
             print(f"Bits Totals: ${bits_data.get('today_bits_revenue', 0.0):.2f} today, ${bits_data.get('lifetime_bits_revenue', 0.0):.2f} lifetime")
+        elif sys.argv[1] == "--eventsub-list":
+            config = load_config()
+            if not config:
+                print("Run --setup first")
+                sys.exit(1)
+            list_eventsub_subscriptions(config)
+        elif sys.argv[1] == "--eventsub-delete":
+            if len(sys.argv) < 3:
+                print("Usage: python twitch_stats.py --eventsub-delete <subscription_id>")
+                sys.exit(1)
+            config = load_config()
+            if not config:
+                print("Run --setup first")
+                sys.exit(1)
+            delete_eventsub_subscription(config, sys.argv[2])
         else:
-            print("Usage: python twitch_stats.py [--setup] [--server <port>] [--set-totals] [--import-csvs <folder>]")
+            print("Usage: python twitch_stats.py [options]")
+            print("\nOptions:")
+            print("  --setup                    Configure Twitch API credentials")
+            print("  --server <port>            Web server only (no Twitch API)")
+            print("  --set-totals               Set initial subscriber counts")
+            print("  --import-csvs <folder>     Import CSVs and update ALL data files")
+            print("  --backfill-archives <folder>  Create dashboard archives only (safe)")
+            print("  --simulate-cheer <bits>    Test: add bits revenue locally")
+            print("  --eventsub-list            List EventSub subscriptions")
+            print("  --eventsub-delete <id>     Delete an EventSub subscription")
             print("\nExamples:")
-            print("  python twitch_stats.py              # Start tracker with built-in web server")
-            print("  python twitch_stats.py --server     # Web server only (no Twitch API)")
-            print("  python twitch_stats.py --setup      # Configure Twitch API credentials")
-            print("  python twitch_stats.py --simulate-cheer 100  # Local test: add $1.00 bits revenue")
+            print("  python twitch_stats.py                    # Start full tracker")
+            print("  python twitch_stats.py --backfill-archives data/import")
+            print("                                            # Backfill dashboard only")
         sys.exit(0)
 
     config = load_config()
@@ -2084,10 +3267,20 @@ if __name__ == "__main__":
     print("=" * 50)
     print(f"Stats Overlay: http://localhost:3001/obs_overlay.html")
     print(f"Branding Editor: http://localhost:3001/branding.html")
-    print(f"Sidebar2: http://localhost:3001/sidebar2.html")
+    print(f"Dashboard: http://localhost:3001/dashboard.html")
+    print(f"Admin: http://localhost:3001/admin_stats.html")
     print(f"Data archive: {ARCHIVE_DIR}/stats_archive_YYYY-MM-DD.csv")
     print(f"Retention: Last {ARCHIVE_RETENTION_DAYS} days")
     print("Press Ctrl+C to stop\n")
+
+    # Regenerate dashboard JSON on startup
+    try:
+        generate_dashboard_json()
+    except Exception as e:
+        print(f"Warning: Could not generate dashboard JSON: {e}")
+
+    # Start stream session for hours tracking
+    start_stream_session()
 
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
@@ -2095,21 +3288,104 @@ if __name__ == "__main__":
     if config.get("enable_irc_bits", True):
         start_bits_irc_listener(config)
 
+    # Start EventSub WebSocket listener to catch small cheermotes (1-99 bits)
+    # that don't appear in IRC chat. Requires: pip install websocket-client
+    if config.get("enable_eventsub_bits", True):
+        start_eventsub_websocket_listener(config)
+
+    # Start keyboard listener for manual entry (cross-platform)
+    def handle_hours_input():
+        """Prompt for and set total hours streamed."""
+        data = load_hours_streamed()
+        current = data.get("total_hours", 0)
+        print(f"\n  Current total hours: {current}")
+        print("  Enter new total hours: ", end='', flush=True)
+        try:
+            hours_input = input().strip()
+            hours = float(hours_input)
+            if hours >= 0:
+                data["total_hours"] = hours
+                save_hours_streamed(data)
+                print(f"  + Hours updated: {current} -> {hours}")
+            else:
+                print("  - Hours cannot be negative")
+        except ValueError:
+            print("  - Please enter a number")
+
+    def keyboard_listener():
+        """Listen for keyboard input to manually add bits or set hours."""
+        import sys
+
+        # Platform-specific keyboard handling
+        if sys.platform == 'win32':
+            import msvcrt
+            print("\nPress 'b' to manually add bits | 'h' to set total hours streamed")
+
+            while True:
+                try:
+                    if msvcrt.kbhit():
+                        char = msvcrt.getch().decode('utf-8', errors='ignore').lower()
+                        if char == 'b':
+                            print("\nEnter bits amount: ", end='', flush=True)
+                            try:
+                                bits_input = input().strip()
+                                bits = int(bits_input)
+                                if bits > 0:
+                                    record_cheer(bits)
+                                    print(f"  + Manually added: {bits} bits")
+                                else:
+                                    print("  - Invalid amount")
+                            except ValueError:
+                                print("  - Please enter a number")
+                        elif char == 'h':
+                            handle_hours_input()
+                    time.sleep(0.1)
+                except Exception:
+                    time.sleep(1)
+        else:
+            # Unix/Linux/Mac - use select
+            import select
+            print("\nPress 'b' to manually add bits | 'h' to set total hours streamed")
+
+            while True:
+                try:
+                    if sys.stdin in select.select([sys.stdin], [], [], 0)[0]:
+                        line = sys.stdin.readline().strip()
+                        if line.lower() == 'b':
+                            print("\nEnter bits amount: ", end='', flush=True)
+                            try:
+                                bits_input = input().strip()
+                                bits = int(bits_input)
+                                if bits > 0:
+                                    record_cheer(bits)
+                                    print(f"  + Manually added: {bits} bits")
+                                else:
+                                    print("  - Invalid amount")
+                            except ValueError:
+                                print("  - Please enter a number")
+                        elif line.lower() == 'h':
+                            handle_hours_input()
+                    time.sleep(0.1)
+                except Exception:
+                    time.sleep(1)
+
+    # Start keyboard listener in background thread
+    keyboard_thread = threading.Thread(target=keyboard_listener, daemon=True)
+    keyboard_thread.start()
+    
     try:
         while True:
             stats = fetch_all_stats(config)
             if stats:
                 save_to_archive(stats)
                 save_latest(stats)
-                timestamp = stats["timestamp"][:19]
-                gifted_revenue = (stats.get('gifted_tiers', {}).get('1000', 0) * 2.50 +
-                                 stats.get('gifted_tiers', {}).get('2000', 0) * 5.00 +
-                                 stats.get('gifted_tiers', {}).get('3000', 0) * 24.99)
+                timestamp = stats['timestamp'][:19]
+                gifted_revenue = (stats.get('gifted_tiers', {}).get('1000', 0) * 4.19 +
+                                 stats.get('gifted_tiers', {}).get('2000', 0) * 6.99 +
+                                 stats.get('gifted_tiers', {}).get('3000', 0) * 17.49)
                 print(f"[{timestamp}] Subs: {stats['subscribers']} | Followers: {stats['followers']} | "
-                      f"Bits: ${stats['bits_today']:.2f} today, ${stats['bits_total']:.2f} total | "
-                      f"Subs: {stats['subs_today_revenue']:.2f} today, {stats['subs_total_revenue']:.2f} total | "
-                      f"Tiers: T1={stats['tiers'].get('1000', 0)} T2={stats['tiers'].get('2000', 0)} T3={stats['tiers'].get('3000', 0)} | "
-                      f"Gifted: {stats.get('gifted_tiers', {}).get('1000', 0)}/{stats.get('gifted_tiers', {}).get('2000', 0)}/{stats.get('gifted_tiers', {}).get('3000', 0)} | "
+                      f"Bits: ${stats['bits_today']:.2f} today | "
+                      f"Hours: {stats.get('hours_session', 0):.1f}h session, {stats.get('hours_total', 0):.1f}h total | "
                       f"Artist: ${stats['artist_raise_30']:.2f} mo | ${stats.get('artist_yearly', 0.0):.2f} life")
             else:
                 print(f"[{datetime.now().isoformat()[:19]}] Failed to fetch stats")

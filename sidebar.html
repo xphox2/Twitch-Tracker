@@ -2,191 +2,469 @@
 <html>
 <head>
     <title>Twitch Stats Sidebar</title>
-    <meta charset="utf-8">
-    <script>
-        // Cache-bust branding for OBS/browser caching.
-        // Avoid document.write (can blank the page in some browsers/OBS).
-        (function loadBranding() {
-            try {
-                const s = document.createElement('script');
-                s.src = 'branding-setup.js?t=' + Date.now();
-                s.onload = () => {
-                    try {
-                        if (typeof applyWidgetStyles === 'function') {
-                            applyWidgetStyles();
-                        }
-                    } catch (e) {}
-                };
-                document.head.appendChild(s);
-            } catch (e) {}
-        })();
-    </script>
+    <script src="branding-setup.js"></script>
     <style>
-        :root {
-            --font-family: 'Segoe UI', Arial, sans-serif;
-            --font-size: 32px;
-            --font-size-label: 14px;
-            --font-weight: bold;
-            --color-primary: #9146ff;
-            --color-monthly: #ff6b6b;
-            --color-lifetime: #ffd700;
-            --color-label: #aaa;
-            --text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
-            --bg-color: transparent;
-            --border-radius: 0;
-            --border-width: 2px;
-            --border-style: solid;
-            --padding: 15px 25px;
-            --gap: 15px;
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
         }
 
         body {
             background: transparent;
-            font-family: var(--font-family);
+            font-family: var(--font-family, 'Bebas Neue', sans-serif);
             color: #fff;
-            text-shadow: var(--text-shadow);
-            padding: 20px;
+            padding: 10px;
             margin: 0;
         }
 
         .sidebar-container {
             display: flex;
             flex-direction: column;
-            gap: var(--gap);
+            gap: var(--gap, 5px);
         }
 
-        .stat-box {
-            background: var(--bg-color);
-            border-radius: var(--border-radius);
-            padding: var(--padding);
+        /* Base widget styles */
+        .widget {
             min-width: 180px;
             text-align: center;
-            border: var(--border-width) var(--border-style);
             display: flex;
             flex-direction: column;
-            gap: 5px;
+            transition: opacity 0.3s ease;
         }
 
-        .stat-box:not(.artist-monthly-box):not(.artist-lifetime-box) {
-            border-color: var(--color-primary);
-        }
-
-        .stat-box:not(.artist-monthly-box):not(.artist-lifetime-box) .stat-value {
-            color: var(--color-primary);
-        }
-
-        .artist-monthly-box {
-            border-color: var(--color-monthly);
-        }
-
-        .artist-monthly-box .stat-value {
-            color: var(--color-monthly);
-        }
-
-        .artist-lifetime-box {
-            border-color: var(--color-lifetime);
-        }
-
-        .artist-lifetime-box .stat-value {
-            color: var(--color-lifetime);
-        }
-
-        .stat-label {
-            font-size: var(--font-size-label);
+        .widget .stat-label {
             text-transform: uppercase;
-            color: var(--color-label);
-            text-shadow: none;
+            text-shadow: var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8));
+            line-height: 1;
         }
 
-        .stat-value {
-            font-size: var(--font-size);
-            font-weight: var(--font-weight);
-            text-shadow: var(--text-shadow);
+        .widget .stat-value {
+            font-weight: var(--font-weight, bold);
+            text-shadow: var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8));
+            line-height: 1;
         }
 
-        .timestamp {
-            font-size: 10px;
-            color: #666;
-            margin-top: 10px;
-            text-shadow: none;
+        /* Widget-specific styles using CSS variables from branding-setup.js */
+        .widget-followers {
+            background: var(--widget-followers-bg-color, transparent);
+            border-radius: var(--widget-followers-border-radius, 0);
+            padding: var(--widget-followers-padding, 8px 15px);
+            border: var(--widget-followers-border-width, 2px) var(--widget-followers-border-style, solid) var(--widget-followers-border-color, #9146ff);
+        }
+        .widget-followers .stat-label {
+            font-size: var(--widget-followers-label-font-size, 14px);
+            color: var(--widget-followers-label-color, #aaaaaa);
+            text-shadow: var(--widget-followers-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+        .widget-followers .stat-value {
+            margin-top: var(--widget-followers-label-gap, 5px);
+            font-size: var(--widget-followers-font-size, 48px);
+            color: var(--widget-followers-text-color, #9146ff);
+            text-shadow: var(--widget-followers-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+
+        .widget-subgoal {
+            background: var(--widget-subgoal-bg-color, transparent);
+            border-radius: var(--widget-subgoal-border-radius, 0);
+            padding: var(--widget-subgoal-padding, 8px 15px);
+            border: var(--widget-subgoal-border-width, 2px) var(--widget-subgoal-border-style, solid) var(--widget-subgoal-border-color, #00d2d3);
+        }
+        .widget-subgoal .stat-label {
+            font-size: var(--widget-subgoal-label-font-size, 14px);
+            color: var(--widget-subgoal-label-color, #aaaaaa);
+            text-shadow: var(--widget-subgoal-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+        .widget-subgoal .stat-value {
+            margin-top: var(--widget-subgoal-label-gap, 5px);
+            font-size: var(--widget-subgoal-font-size, 42px);
+            color: var(--widget-subgoal-text-color, #00d2d3);
+            text-shadow: var(--widget-subgoal-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+
+        .widget-bits {
+            background: var(--widget-bits-bg-color, transparent);
+            border-radius: var(--widget-bits-border-radius, 0);
+            padding: var(--widget-bits-padding, 8px 15px);
+            border: var(--widget-bits-border-width, 2px) var(--widget-bits-border-style, solid) var(--widget-bits-border-color, #2ed573);
+        }
+        .widget-bits .stat-label {
+            font-size: var(--widget-bits-label-font-size, 14px);
+            color: var(--widget-bits-label-color, #aaaaaa);
+            text-shadow: var(--widget-bits-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+        .widget-bits .stat-value {
+            margin-top: var(--widget-bits-label-gap, 5px);
+            font-size: var(--widget-bits-font-size, 42px);
+            color: var(--widget-bits-text-color, #2ed573);
+            text-shadow: var(--widget-bits-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+
+        .widget-hours {
+            background: var(--widget-hours-bg-color, transparent);
+            border-radius: var(--widget-hours-border-radius, 0);
+            padding: var(--widget-hours-padding, 8px 15px);
+            border: var(--widget-hours-border-width, 2px) var(--widget-hours-border-style, solid) var(--widget-hours-border-color, #00bcd4);
+        }
+        .widget-hours .stat-label {
+            font-size: var(--widget-hours-label-font-size, 14px);
+            color: var(--widget-hours-label-color, #aaaaaa);
+            text-shadow: var(--widget-hours-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+        .widget-hours .stat-value {
+            margin-top: var(--widget-hours-label-gap, 5px);
+            font-size: var(--widget-hours-font-size, 42px);
+            color: var(--widget-hours-text-color, #00bcd4);
+            text-shadow: var(--widget-hours-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+
+        .widget-monthly {
+            background: var(--widget-monthly-bg-color, transparent);
+            border-radius: var(--widget-monthly-border-radius, 0);
+            padding: var(--widget-monthly-padding, 8px 15px);
+            border: var(--widget-monthly-border-width, 2px) var(--widget-monthly-border-style, solid) var(--widget-monthly-border-color, #ff6b6b);
+        }
+        .widget-monthly .stat-label {
+            font-size: var(--widget-monthly-label-font-size, 14px);
+            color: var(--widget-monthly-label-color, #aaaaaa);
+            text-shadow: var(--widget-monthly-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+        .widget-monthly .stat-value {
+            margin-top: var(--widget-monthly-label-gap, 5px);
+            font-size: var(--widget-monthly-font-size, 42px);
+            color: var(--widget-monthly-text-color, #ff6b6b);
+            text-shadow: var(--widget-monthly-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+
+        .widget-lifetime {
+            background: var(--widget-lifetime-bg-color, transparent);
+            border-radius: var(--widget-lifetime-border-radius, 0);
+            padding: var(--widget-lifetime-padding, 8px 15px);
+            border: var(--widget-lifetime-border-width, 2px) var(--widget-lifetime-border-style, solid) var(--widget-lifetime-border-color, #ffd700);
+        }
+        .widget-lifetime .stat-label {
+            font-size: var(--widget-lifetime-label-font-size, 14px);
+            color: var(--widget-lifetime-label-color, #aaaaaa);
+            text-shadow: var(--widget-lifetime-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+        .widget-lifetime .stat-value {
+            margin-top: var(--widget-lifetime-label-gap, 5px);
+            font-size: var(--widget-lifetime-font-size, 36px);
+            color: var(--widget-lifetime-text-color, #ffd700);
+            text-shadow: var(--widget-lifetime-text-shadow, var(--text-shadow, 2px 2px 4px rgba(0,0,0,0.8)));
+        }
+
+        /* Widget Group Container */
+        .widget-group {
+            position: relative;
+            min-height: 80px;
+        }
+
+        .widget-group .widget {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.5s ease-in-out;
+        }
+
+        .widget-group .widget.active {
+            position: relative;
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        /* Fade animation (default) */
+        .widget-group.fade .widget {
+            transition: opacity 0.5s ease-in-out;
+        }
+
+        /* Slide Up animation */
+        .widget-group.slide-up .widget {
+            transform: translateY(30px);
+            transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
+        }
+        .widget-group.slide-up .widget.active {
+            transform: translateY(0);
+        }
+
+        /* Slide Down animation */
+        .widget-group.slide-down .widget {
+            transform: translateY(-30px);
+            transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
+        }
+        .widget-group.slide-down .widget.active {
+            transform: translateY(0);
+        }
+
+        /* Instant (no animation) */
+        .widget-group.instant .widget {
+            transition: none;
+        }
+
+        .hidden {
+            display: none !important;
         }
     </style>
 </head>
 <body>
-    <div class="sidebar-container">
-        <div class="stat-box">
-            <div class="stat-label">Followers</div>
-            <div class="stat-value" id="followers">0</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Subscribers</div>
-            <div class="stat-value" id="subscribers">0</div>
-        </div>
-        <div class="stat-box">
-            <div class="stat-label">Bits Today</div>
-            <div class="stat-value" id="bits-today">0</div>
-        </div>
-        <div class="stat-box artist-monthly-box">
-            <div class="stat-label">Artists (Monthly)</div>
-            <div class="stat-value" id="artist-monthly">$0.00</div>
-        </div>
-        <div class="stat-box artist-lifetime-box">
-            <div class="stat-label">Artists (Lifetime)</div>
-            <div class="stat-value" id="artist-lifetime">$0.00</div>
-        </div>
+    <div class="sidebar-container" id="sidebar-container">
+        <!-- Widgets will be dynamically generated -->
     </div>
-    <div class="timestamp" id="timestamp">Updated: --</div>
 
     <script>
-        (function applyDebugBg() {
+        // Widget definitions
+        const widgetDefs = {
+            followers: { label: 'Followers', valueKey: 'followers' },
+            subgoal: { label: 'Sub Goal', valueKey: 'subgoal' },
+            bits: { label: 'Bits Today', valueKey: 'bits' },
+            hours: { label: 'Hours Streamed', valueKey: 'hours' },
+            monthly: { label: 'Artists (Monthly)', valueKey: 'monthly' },
+            lifetime: { label: 'Artists (Lifetime)', valueKey: 'lifetime' }
+        };
+
+        // Current stats data
+        let statsData = {
+            followers: '---',
+            subgoal: '-- / --',
+            bits: '$0.00',
+            hours: '0.0',
+            monthly: '$0',
+            lifetime: '$0'
+        };
+
+        // Branding config
+        let brandingConfig = null;
+        let lastConfigHash = null;
+
+        // Group rotation timers
+        let groupTimers = {};
+
+        // Load branding config
+        function loadBrandingConfig() {
             try {
-                const params = new URLSearchParams(window.location.search);
-                if (params.get('debug') === '1') {
-                    document.addEventListener('DOMContentLoaded', () => {
-                        document.body.style.background = 'rgba(0,0,0,0.65)';
-                    });
+                const stored = localStorage.getItem('brandingConfig');
+                if (stored) {
+                    brandingConfig = JSON.parse(stored);
                 }
-            } catch (e) {}
-        })();
-
-        async function updateStats() {
-            try {
-                const statsRes = await fetch('data/latest_stats.json?t=' + Date.now(), { cache: 'no-store' });
-                const stats = await statsRes.json();
-
-                try {
-                    if (typeof applyWidgetStyles === 'function') {
-                        applyWidgetStyles();
-                    }
-                } catch (e) {}
-
-                document.getElementById('followers').textContent = stats.followers || 0;
-                let cur = stats.sub_goal_current;
-                let goal = stats.sub_goal_target;
-                if (cur === undefined || goal === undefined) {
-                    // Fallback if the running tracker hasn't been updated yet.
-                    try {
-                        const goalRes = await fetch('data/sub_goal.json?t=' + Date.now(), { cache: 'no-store' });
-                        const g = await goalRes.json();
-                        cur = g.current;
-                        goal = g.goal;
-                    } catch (e) {}
-                }
-                document.getElementById('subscribers').textContent = `${cur ?? 0} / ${goal ?? 150}`;
-                document.getElementById('bits-today').textContent = '$' + (stats.bits_today || 0).toFixed(2);
-
-                document.getElementById('artist-monthly').textContent = '$' + (stats.artist_raise_30 || 0).toFixed(2);
-                document.getElementById('artist-lifetime').textContent = '$' + (stats.artist_yearly || 0).toFixed(2);
-
-                document.getElementById('timestamp').textContent = 'Updated: ' + (stats.timestamp || '--').replace('T', ' ').slice(0, 19);
             } catch (e) {
-                console.log('Waiting for data...', e.message);
+                console.error('Error loading branding config:', e);
+            }
+            return brandingConfig;
+        }
+
+        // Simple hash to detect config changes
+        function getConfigHash() {
+            const stored = localStorage.getItem('brandingConfig');
+            if (!stored) return null;
+            let hash = 0;
+            for (let i = 0; i < stored.length; i++) {
+                const char = stored.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash;
+            }
+            return hash;
+        }
+
+        // Check for branding config changes
+        function checkForConfigChanges() {
+            const currentHash = getConfigHash();
+            if (lastConfigHash !== null && currentHash !== lastConfigHash) {
+                console.log('Branding config changed, rebuilding sidebar...');
+                // Clear all group timers
+                Object.keys(groupTimers).forEach(id => clearInterval(groupTimers[id]));
+                groupTimers = {};
+                // Reload styles and rebuild
+                if (typeof applyWidgetStyles === 'function') {
+                    applyWidgetStyles();
+                }
+                buildSidebar();
+            }
+            lastConfigHash = currentHash;
+        }
+
+        // Check if widget is in any group
+        function getWidgetGroup(widgetId) {
+            if (!brandingConfig || !brandingConfig.widgetGroups) return null;
+            return brandingConfig.widgetGroups.find(g => g.widgets && g.widgets.includes(widgetId));
+        }
+
+        // Create widget HTML
+        function createWidgetElement(widgetId, data) {
+            const def = widgetDefs[widgetId];
+            if (!def) return null;
+
+            const widget = document.createElement('div');
+            widget.className = `widget widget-${widgetId}`;
+            widget.dataset.widget = widgetId;
+
+            // Check if widget is enabled
+            if (brandingConfig && brandingConfig.widgets && brandingConfig.widgets[widgetId]) {
+                if (brandingConfig.widgets[widgetId].enabled === false) {
+                    widget.classList.add('hidden');
+                }
+            }
+
+            widget.innerHTML = `
+                <div class="stat-label">${def.label}</div>
+                <div class="stat-value" id="value-${widgetId}">${data[def.valueKey] || '---'}</div>
+            `;
+
+            return widget;
+        }
+
+        // Build the sidebar based on config
+        function buildSidebar() {
+            const container = document.getElementById('sidebar-container');
+            container.innerHTML = '';
+
+            loadBrandingConfig();
+
+            // Get widget order from config or use default
+            const widgetOrder = (brandingConfig && brandingConfig.widgetOrder)
+                ? brandingConfig.widgetOrder
+                : ['followers', 'subgoal', 'bits', 'hours', 'monthly', 'lifetime'];
+
+            // Track rendered widgets to avoid duplicates from groups
+            const renderedWidgets = new Set();
+
+            widgetOrder.forEach(widgetId => {
+                if (renderedWidgets.has(widgetId)) return;
+
+                const group = getWidgetGroup(widgetId);
+
+                if (group) {
+                    // Create group container
+                    const groupContainer = document.createElement('div');
+                    groupContainer.className = `widget-group ${group.animation || 'fade'}`;
+                    groupContainer.dataset.groupId = group.id;
+
+                    group.widgets.forEach((gWidgetId, index) => {
+                        renderedWidgets.add(gWidgetId);
+                        const widget = createWidgetElement(gWidgetId, statsData);
+                        if (widget) {
+                            if (index === 0) {
+                                widget.classList.add('active');
+                            }
+                            groupContainer.appendChild(widget);
+                        }
+                    });
+
+                    container.appendChild(groupContainer);
+
+                    // Start rotation timer for this group
+                    startGroupRotation(group);
+                } else {
+                    // Regular widget (not in a group)
+                    const widget = createWidgetElement(widgetId, statsData);
+                    if (widget) {
+                        container.appendChild(widget);
+                        renderedWidgets.add(widgetId);
+                    }
+                }
+            });
+        }
+
+        // Start rotation for a widget group
+        function startGroupRotation(group) {
+            if (!group || !group.widgets || group.widgets.length < 2) return;
+
+            // Clear existing timer if any
+            if (groupTimers[group.id]) {
+                clearInterval(groupTimers[group.id]);
+            }
+
+            let currentIndex = 0;
+            const interval = (group.interval || 10) * 1000;
+
+            groupTimers[group.id] = setInterval(() => {
+                const container = document.querySelector(`.widget-group[data-group-id="${group.id}"]`);
+                if (!container) return;
+
+                const widgets = container.querySelectorAll('.widget');
+                if (widgets.length === 0) return;
+
+                // Hide current
+                widgets[currentIndex].classList.remove('active');
+
+                // Show next
+                currentIndex = (currentIndex + 1) % widgets.length;
+                widgets[currentIndex].classList.add('active');
+            }, interval);
+        }
+
+        // Update widget values with new data
+        function updateWidgetValues(data) {
+            Object.keys(data).forEach(key => {
+                const valueEl = document.getElementById(`value-${key}`);
+                if (valueEl) {
+                    valueEl.textContent = data[key];
+                }
+            });
+        }
+
+        // Fetch stats from API
+        async function fetchStats() {
+            try {
+                const response = await fetch('/api/stats');
+                if (response.ok) {
+                    const data = await response.json();
+
+                    // Format the data
+                    statsData.followers = data.followers ? data.followers.toLocaleString() : '---';
+
+                    if (data.sub_goal_current !== undefined && data.sub_goal_target !== undefined) {
+                        statsData.subgoal = `${data.sub_goal_current} / ${data.sub_goal_target}`;
+                    }
+
+                    if (data.bits_today !== undefined) {
+                        // bits_today is already in dollars (e.g., 12.34)
+                        statsData.bits = '$' + parseFloat(data.bits_today).toFixed(2);
+                    }
+
+                    if (data.hours_total !== undefined) {
+                        statsData.hours = Math.floor(data.hours_total).toLocaleString();
+                    }
+
+                    if (data.artist_raise_30 !== undefined) {
+                        statsData.monthly = '$' + parseFloat(data.artist_raise_30).toFixed(2);
+                    }
+
+                    if (data.artist_yearly !== undefined) {
+                        statsData.lifetime = '$' + parseFloat(data.artist_yearly).toFixed(2);
+                    }
+
+                    updateWidgetValues(statsData);
+                }
+            } catch (e) {
+                console.error('Error fetching stats:', e);
             }
         }
 
-        document.getElementById('subscribers').textContent = '0 / 150';
-        updateStats();
-        setInterval(updateStats, 5000);
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            // Apply branding styles first (from branding-setup.js)
+            if (typeof applyWidgetStyles === 'function') {
+                applyWidgetStyles();
+            }
+
+            // Store initial config hash
+            lastConfigHash = getConfigHash();
+
+            // Build sidebar with widgets
+            buildSidebar();
+
+            // Fetch initial stats
+            fetchStats();
+
+            // Poll for updates every 5 seconds
+            setInterval(fetchStats, 5000);
+
+            // Check for branding config changes every 2 seconds
+            setInterval(checkForConfigChanges, 2000);
+        });
     </script>
 </body>
 </html>
